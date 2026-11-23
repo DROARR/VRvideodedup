@@ -1,11 +1,7 @@
 name: Tests
 
 on:
-  pull_request:
-  # Populate the default-branch Windows dependency cache, which PRs and manual
-  # packaging can both restore. PR-created caches alone cannot be shared back.
-  push:
-    branches: [master]
+  # Private VR copy: runs only when started by hand, so pushes don't use GitHub Actions.
   workflow_dispatch:
 
 permissions:

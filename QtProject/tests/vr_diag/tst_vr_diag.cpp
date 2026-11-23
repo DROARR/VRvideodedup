@@ -5,7 +5,9 @@
 #include <QtTest>
 #include <bit>
 #include <memory>
+#ifdef Q_OS_UNIX
 #include <sys/resource.h>
+#endif
 
 class VrDiag : public QObject
 {
@@ -70,10 +72,14 @@ class VrDiag : public QObject
                        qPrintable(QFileInfo(videos[i]->_filePathName).fileName()),
                        qPrintable(QFileInfo(videos[j]->_filePathName).fileName()));
             }
+        long peakMb = -1;
+#ifdef Q_OS_UNIX
         struct rusage ru;
         getrusage(RUSAGE_SELF, &ru);
-        printf("TOTAL %lld ms, peak memory %ld MB, threads %d, mode %d\n", total.elapsed(), ru.ru_maxrss / 1024,
-               threads, prefs.thumbnailsMode());
+        peakMb = ru.ru_maxrss / 1024;
+#endif
+        printf("TOTAL %lld ms, peak memory %ld MB, threads %d, mode %d\n", total.elapsed(), peakMb, threads,
+               prefs.thumbnailsMode());
     }
 };
 QTEST_MAIN(VrDiag)
