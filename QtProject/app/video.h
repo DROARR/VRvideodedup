@@ -102,6 +102,17 @@ class Video : public QObject
     QImage minimizeImage(const QImage& image) const;
     QString msToHHMMSS(const int64_t& time) const;
     QImage getQImageFromFrame(const ffmpeg::AVFrame* pFrame, int presentationRotation) const;
+    // Size of one capture inside the collage: the video's own size, capped so its longest edge is at most
+    // _maxCaptureEdge. Matching shrinks every capture to a few dozen pixels anyway, so full 8K tiles (a 4x3 collage
+    // of 8K frames is over 1 GB) only cost memory: with one scan thread per core, VR libraries ran out of memory.
+    QSize captureTileSize() const;
+
+    // Decoded (pre-scaling) size of the last capture, to keep detecting metadata errors and variable resolution
+    // now that captures are downscaled while converting.
+    mutable QSize _lastCaptureSourceSize;
+    // Set once a capture reached the end of a video whose duration had to be estimated, and the real duration was
+    // learned from the last frame. Prevents more than one corrected retry per video.
+    bool _durationLearnedAtEnd = false;
 
     uint progress = 1; // to detect scenarios where ffmpeg gets stuck we update progress from time to time
     bool shouldStop = false;
@@ -118,6 +129,10 @@ class Video : public QObject
     static constexpr int _videoStillUsable = 90;   //90% of video duration is considered usable
     static constexpr int _thumbnailMaxWidth = 448; //small size to save memory and cache space
     static constexpr int _thumbnailMaxHeight = 336;
+    static constexpr int _maxCaptureEdge = 1920; // 1080p and smaller videos are unaffected by the cap
+    // Corrupt packets are skipped (the decoder conceals them, like video players do) instead of failing the capture,
+    // but a file that is mostly unreadable must still fail rather than decode garbage for minutes.
+    static constexpr int _maxSkippedCorruptPackets = 200;
     static constexpr int _monochromeSubstituteOffset = 2; // retry 2% toward the video centre, near the intended sample
 };
 

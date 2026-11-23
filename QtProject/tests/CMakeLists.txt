@@ -172,3 +172,11 @@ add_qt_test(test_external_video_matching
         shared/video_matching_test_helpers.cpp
 )
 set_tests_properties(test_external_video_matching PROPERTIES LABELS "external-fixtures")
+
+# VR diagnostic harness: VR_DIAG_DIR=<folder> [VR_DIAG_MODE=<n>] [VR_DIAG_THREADS=<n>]
+add_qt_test(test_vr_diag SOURCES vr_diag/tst_vr_diag.cpp)
+set_tests_properties(test_vr_diag PROPERTIES LABELS "diagnostic")
+
+# VR library robustness: corrupt packets, unknown duration without a seek index, 8K captures
+add_qt_test(test_repo_vr_robustness SOURCES repo/vr_robustness/tst_vr_robustness.cpp)
+set_tests_properties(test_repo_vr_robustness PROPERTIES LABELS "repo-fixtures")

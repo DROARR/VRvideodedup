@@ -325,7 +325,8 @@ const QString Video::getMetadata(const QString& filename)
 const QString Video::takeScreenCaptures(const Db* cache)
 {
     Thumbnail thumb(this->_prefs.thumbnailsMode());
-    QImage thumbnail(thumb.cols() * width, thumb.rows() * height, QImage::Format_RGB888);
+    const QSize tile = captureTileSize();
+    QImage thumbnail(thumb.cols() * tile.width(), thumb.rows() * tile.height(), QImage::Format_RGB888);
     if (thumbnail.isNull())
         return "could not allocate thumbnail image";
     const QVector<int> percentages = thumb.percentages(); // percent from 1 to 100
@@ -368,21 +369,26 @@ const QString Video::takeScreenCaptures(const Db* cache)
 
         QImage frame = std::move(resolved.frame);
 
-        if (frame.width() > width || frame.height() > height) { //metadata parsing error or variable resolution
+        // Decoded captures are downscaled during conversion, so check the decoded size rather than the image's.
+        // Cached captures are stored small, so they have no decoded size to check.
+        const QSize decodedSize = _lastCaptureSourceSize.isEmpty() ? frame.size() : _lastCaptureSourceSize;
+        _lastCaptureSourceSize = QSize();
+        if (decodedSize.width() > width || decodedSize.height() > height)
+        { //metadata parsing error or variable resolution
             return QString("capture height=%1 width=%2 is different from metadata height=%3 width=%4")
-                .arg(frame.height())
-                .arg(frame.width())
+                .arg(decodedSize.height())
+                .arg(decodedSize.width())
                 .arg(height)
                 .arg(width);
         }
 
         frameAnalyses[static_cast<size_t>(capture)] = resolved.analysis;
         // Cached captures are stored small; normalize every frame once after any substitute frame is selected.
-        if (frame.size() != QSize(width, height))
-            frame = frame.scaled(width, height, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+        if (frame.size() != tile)
+            frame = frame.scaled(tile, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
 
         QPainter painter(&thumbnail); //copy captured frame into right place in thumbnail
-        painter.drawImage(capture % thumb.cols() * width, capture / thumb.cols() * height, frame);
+        painter.drawImage(capture % thumb.cols() * tile.width(), capture / thumb.cols() * tile.height(), frame);
 
         if (resolved.writeToCache && cache != nullptr) {
             QByteArray cachedImage;
@@ -444,6 +450,7 @@ void Video::processThumbnail(QImage& thumbnail, const Thumbnail& thumb, const st
 {
     // Detect bars once on the selected sampled frames before transformations, then reuse the crop for every rotation variant.
     const std::optional<NormalizedCrop> crop = VisualFingerprintBuilder::unanimousBlackBarCrop(analyses);
+    const QSize tile = captureTileSize();
     const bool cutEndsMode = this->_prefs.thumbnailsMode() == cutEnds;
     const bool detectRotatedCopies = this->_prefs.detectRotatedCopies();
     const int segments = cutEndsMode ? 2 : 1;
@@ -463,13 +470,14 @@ void Video::processThumbnail(QImage& thumbnail, const Thumbnail& thumb, const st
                 // Use the assembled sample collage (or selected cut-ends segment) unchanged when no crop or rotation is needed.
                 QImage matchingImage = thumbnail;
                 if (cutEndsMode)
-                    matchingImage = thumbnail.copy(segment * width, 0, width, height);
+                    matchingImage = thumbnail.copy(segment * tile.width(), 0, tile.width(), tile.height());
                 fingerprints[segment][static_cast<int>(rotation)] =
                     VisualFingerprintBuilder::build(matchingImage, segmentUsable);
                 continue;
             }
-            const QImage matchingImage = buildTransformedMatchingImage(thumbnail, thumb, width, height, firstCapture,
-                                                                       captureCount, columns, rows, crop, rotation);
+            const QImage matchingImage =
+                buildTransformedMatchingImage(thumbnail, thumb, tile.width(), tile.height(), firstCapture, captureCount,
+                                              columns, rows, crop, rotation);
             fingerprints[segment][static_cast<int>(rotation)] =
                 VisualFingerprintBuilder::build(matchingImage, segmentUsable);
         }
@@ -478,6 +486,15 @@ void Video::processThumbnail(QImage& thumbnail, const Thumbnail& thumb, const st
     thumbnail = minimizeImage(thumbnail);
     QBuffer buffer(&this->thumbnail);
     thumbnail.save(&buffer, QByteArrayLiteral("JPG"), _jpegQuality); //save GUI thumbnail as tiny JPEG
+}
+
+QSize Video::captureTileSize() const
+{
+    const int longest = qMax<int>(width, height);
+    if (longest <= _maxCaptureEdge)
+        return QSize(width, height);
+    const double scale = static_cast<double>(_maxCaptureEdge) / longest;
+    return QSize(qMax(1, qRound(width * scale)), qMax(1, qRound(height * scale)));
 }
 
 QImage Video::minimizeImage(const QImage& image) const
@@ -620,7 +637,6 @@ QImage Video::ffmpegLib_captureAt(const int percent, const int ofDuration)
     }
 
     // Now let's find and read the packets, then frame
-    bool readFrame = false;
     int failedFrames = 0;
     // get timestamp, in units of stream time base. We have in miliseconds
     int64_t ms_stream_duration = 0;
@@ -677,29 +693,136 @@ QImage Video::ffmpegLib_captureAt(const int percent, const int ofDuration)
     // "ffmpeg will seek to the closest seek point before position"
     // -> need to seek to closest previous keyframe and then decode each frame until the one right BEFORE (or at/after) exact position
     // in fact from manual tests with the executable, it seems the behavior was not very consistent. Will just seek to frame right before or after timestamp
-    if (ffmpeg::av_seek_frame(fmt_ctx, stream_index, wanted_ts, AVSEEK_FLAG_BACKWARD /* 0 for no flags*/) < 0)
-    { // will seek to closest previous keyframe
-        qDebug() << "failed to seek to frame at timestamp "
-                 << msToHHMMSS(1000 * wanted_ts * vs->time_base.num / vs->time_base.den) << " for file "
-                 << _filePathName;
+    auto seekTo = [&](int64_t ts) {
+        if (ffmpeg::av_seek_frame(fmt_ctx, stream_index, ts, AVSEEK_FLAG_BACKWARD) >= 0)
+            return true;
+        // Some containers (e.g. files without a seek index) reject keyframe-backward seeks but accept a ranged seek.
+        return ffmpeg::avformat_seek_file(fmt_ctx, stream_index, INT64_MIN, ts, ts, 0) >= 0;
+    };
+    auto freeAll = [&]() {
         ffmpeg::av_packet_free(&vPacket);
         ffmpeg::av_frame_free(&vFrame);
         ffmpeg::avcodec_free_context(&codec_ctx);
         ffmpeg::avformat_close_input(&fmt_ctx);
+    };
+    if (!seekTo(wanted_ts)) {
+        qDebug() << "failed to seek to frame at timestamp "
+                 << msToHHMMSS(1000 * wanted_ts * vs->time_base.num / vs->time_base.den) << " for file "
+                 << _filePathName;
+        freeAll();
         return img;
     }
-    while (readFrame == false) {
+
+    // The most recent decoded frame that came before the wanted position. Used when the file ends before reaching it:
+    // durations from metadata or estimation can be longer than the decodable video (e.g. audio track longer than the
+    // video, truncated recordings), and the last real frame is then the closest usable capture.
+    ffmpeg::AVFrame* lastFrame = ffmpeg::av_frame_alloc();
+    if (!lastFrame) {
+        qDebug() << "failed to allocated memory for frame for file " << _filePathName;
+        freeAll();
+        return img;
+    }
+    bool haveLastFrame = false;
+    int64_t lastFrameTs = AV_NOPTS_VALUE;
+    int skippedCorruptPackets = 0;
+    int lastPacketSize = 0;
+    const bool durationWasEstimated = frames_estimated != -1;
+
+    // Receives every frame the decoder has ready. Returns 1 when the wanted frame was converted into img,
+    // -1 on unrecoverable error, 0 when more input is needed.
+    auto receiveFrames = [&]() -> int {
+        while (true) {
+            const int r = ffmpeg::avcodec_receive_frame(codec_ctx, vFrame);
+            if (r == AVERROR(EAGAIN) || r == AVERROR_EOF)
+                return 0;
+            if (r < 0)
+#ifdef DEBUG_VIDEO_READING
+                qDebug() << "Failed to receive frame for " << _filePathName;
+#endif
+            return 0;
+            long long curr_ts = -1;
+            if (vFrame->best_effort_timestamp != AV_NOPTS_VALUE)
+                curr_ts = vFrame->best_effort_timestamp;
+            else if (vFrame->pts != AV_NOPTS_VALUE)
+                curr_ts = vFrame->pts;
+            else if (vFrame->pkt_dts != AV_NOPTS_VALUE)
+                curr_ts = vFrame->pkt_dts;
+#ifdef DEBUG_VIDEO_READING
+            qDebug() << "Frame " << "type " << av_get_picture_type_char(vFrame->pict_type) << " wanted ts " << wanted_ts
+                     << " curr_ts " << curr_ts;
+#endif
+            // try to find estimate of frame rate TODO : find another way to do this, with frame ts maybe... ?
+            if (this->framerate == 0) {
+                ffmpeg::AVRational est_fps = ffmpeg::av_guess_frame_rate(fmt_ctx, vs, vFrame);
+                if (est_fps.num != 0 && est_fps.den != 0)
+                    this->framerate = round(ffmpeg::av_q2d(est_fps) * 10) / 10;
+            }
+            // try to find estimate stream duration from frame size and file size
+            // for video, an AVPacket typically contains one compressed frame, so use the packet size for the heuristic
+            if (frames_estimated != -1 && frames_estimated < ESTIMATE_DURATION_FROM_FRAME_NB && lastPacketSize != 0
+                && vs->time_base.num != 0 /*avoid 0 divisions*/)
+            {
+                avg_frame_bytes_size =
+                    (frames_estimated * avg_frame_bytes_size + lastPacketSize) / (1 + frames_estimated);
+                frames_estimated++;
+                ms_stream_duration =
+                    (double)ESTIMATE_DURATION_FROM_FRAME_RESCALE * 1000 * this->size * vs->avg_frame_rate.den
+                    / (avg_frame_bytes_size * vs->avg_frame_rate.num
+                       + 1); // rescale to avoid over estimating, add 1 because avg_frame_rate can be 0 !
+                wanted_ms_place = (double)ms_stream_duration * percent * ofDuration / (100 * 100 /*percents*/);
+                wanted_ts = vs->time_base.den * wanted_ms_place / (vs->time_base.num * 1000 /*we have ms duration*/);
+                this->duration = ms_stream_duration;
+#ifdef DEBUG_VIDEO_READING
+                qDebug() << "No video duration : estimated from file size and frame size "
+                         << msToHHMMSS(ms_stream_duration);
+#endif
+                if (frames_estimated == ESTIMATE_DURATION_FROM_FRAME_NB) {
+                    if (!seekTo(wanted_ts)) {
+                        qDebug() << "failed to seek to frame at timestamp "
+                                 << msToHHMMSS(1000 * wanted_ts * vs->time_base.num / vs->time_base.den) << " for file "
+                                 << _filePathName;
+                        return -1;
+                    }
+                    // Frames still buffered in the decoder come from before the seek.
+                    ffmpeg::avcodec_flush_buffers(codec_ctx);
+                    ffmpeg::av_frame_unref(vFrame);
+                    ffmpeg::av_frame_unref(lastFrame);
+                    haveLastFrame = false;
+                    return 0;
+                }
+            }
+            if ((curr_ts - wanted_ts) >= -ts_diff) { // must read frames until we get before wanted time stamp
+                img = getQImageFromFrame(vFrame, capturePresentationRotation);
+                ffmpeg::av_frame_unref(vFrame);
+                if (img.isNull()) {
+                    qDebug() << "Failed to save img for file " << _filePathName;
+                    return -1;
+                }
+                return 1;
+            }
+            ffmpeg::av_frame_unref(lastFrame);
+            ffmpeg::av_frame_move_ref(lastFrame, vFrame);
+            haveLastFrame = true;
+            lastFrameTs = curr_ts;
+        }
+    };
+
+    int outcome = 0; // 1 found, -1 failed
+    bool reachedEnd = false;
+    while (outcome == 0) {
         QMutexLocker locker(&this->progressLock);
         this->progress++;
         locker.unlock();
 
-        int ret = ffmpeg::av_read_frame(fmt_ctx, vPacket); // reads packet frames, but buffers some so at the end,
-            // even if it says EOF we need to decode again until there's no frames returned
-#ifdef DEBUG_VIDEO_READING
-        if (ret == AVERROR_EOF)
-            qDebug() << "av_read_frame said eof for file " << _filePathName;
-#endif
-        if (ret /* reads all stream frames, must check for when video*/ < 0) {
+        const int ret = ffmpeg::av_read_frame(fmt_ctx, vPacket);
+        if (ret == AVERROR_EOF) {
+            // Drain: the decoder buffers frames, so the wanted one may only come out once told there is no more input.
+            ffmpeg::avcodec_send_packet(codec_ctx, nullptr);
+            outcome = receiveFrames();
+            reachedEnd = outcome == 0;
+            break;
+        }
+        if (ret < 0) {
             failedFrames++;
 #ifdef DEBUG_VIDEO_READING
             qDebug() << "Failed to read 1 frame, will try again for file" << _filePathName;
@@ -707,148 +830,72 @@ QImage Video::ffmpegLib_captureAt(const int percent, const int ofDuration)
             if (failedFrames > FAIL_ON_FRAME_DECODE_NB_FAIL) {
                 qDebug() << "Failed to read frames too many(" << failedFrames << ") times, will stop, for file "
                          << _filePathName;
-                ffmpeg::av_packet_free(&vPacket);
-                ffmpeg::av_frame_free(&vFrame);
-                ffmpeg::avcodec_free_context(&codec_ctx);
-                ffmpeg::avformat_close_input(&fmt_ctx);
-                return img;
+                outcome = -1;
             }
-            if (ret != AVERROR_EOF) {
-                // TODO ? unref packet ?
-                continue;
-            }
+            continue;
         }
-        else {
-            failedFrames = 0;
-        }
+        failedFrames = 0;
 
-        // if it's the video stream
-        if (vPacket->stream_index == stream_index) {
-            if (ffmpeg::avcodec_send_packet(codec_ctx, vPacket) < 0) {
-                if (ret == AVERROR_EOF)
-                    qDebug() << "Reached end of file but no matching frame for " << _filePathName;
-                else
-                    qDebug() << "Failed to send raw packet to decoder for file " << _filePathName;
-                ffmpeg::av_packet_free(&vPacket);
-                ffmpeg::av_frame_free(&vFrame);
-                ffmpeg::avcodec_free_context(&codec_ctx);
-                ffmpeg::avformat_close_input(&fmt_ctx);
-                return img;
-            }
-            if (ffmpeg::avcodec_receive_frame(codec_ctx, vFrame) == 0)
-            { // should debug codes, 0 means success, otherwise just try again
-                long long curr_ts = -1;
-                if (vFrame->best_effort_timestamp != AV_NOPTS_VALUE)
-                    curr_ts = vFrame->best_effort_timestamp;
-                else if (vFrame->pts != AV_NOPTS_VALUE)
-                    curr_ts = vFrame->pts;
-                else if (vPacket->pts != AV_NOPTS_VALUE)
-                    curr_ts = vPacket->pts;
-                else if (vFrame->pkt_dts != AV_NOPTS_VALUE)
-                    curr_ts = vFrame->pkt_dts;
-#ifdef DEBUG_VIDEO_READING
-                //                saveToJPEG(codec_ctx, vFrame, imgPathname +  " pts" + msToHHMMSS((long long)1000*vFrame->pts*vs->time_base.num/vs->time_base.den) + ".bmp");
-                qDebug() << "Frame " << "type " << av_get_picture_type_char(vFrame->pict_type) << " frame number "
-                         << codec_ctx->frame_number;
-                qDebug() << " wanted ts (from start)" << wanted_ts << " in time (from 0)"
-                         << msToHHMMSS(1000 * (wanted_ts - start_time) * vs->time_base.num / vs->time_base.den)
-                         << " vFrame pts " << vFrame->pts << " in time (from0)"
-                         << msToHHMMSS(1000 * (vFrame->pts - start_time) * vs->time_base.num / vs->time_base.den)
-                         << " pkt dts " << vFrame->pkt_dts << " curr_ts " << curr_ts << " best effort ts "
-                         << vFrame->best_effort_timestamp;
-#endif
-                // try to find estimate of frame rate TODO : find another way to do this, with frame ts maybe... ?
-                if (this->framerate == 0) {
-                    ffmpeg::AVRational est_fps = ffmpeg::av_guess_frame_rate(fmt_ctx, vs, vFrame);
-                    if (est_fps.num != 0 && est_fps.den != 0)
-                        this->framerate = round(ffmpeg::av_q2d(est_fps) * 10) / 10;
-                }
-                // try to find estimate stream duration from frame size and file size
-                // for video, AVPacket typically contains one compressed frame, so use the packet size for the heuristic
-                if (frames_estimated != -1 && frames_estimated < ESTIMATE_DURATION_FROM_FRAME_NB && vPacket->size != 0
-                    && vs->time_base.num != 0 /*avoid 0 divisions*/)
-                {
-                    avg_frame_bytes_size =
-                        (frames_estimated * avg_frame_bytes_size + vPacket->size) / (1 + frames_estimated);
-                    frames_estimated++;
-                    ms_stream_duration =
-                        (double)ESTIMATE_DURATION_FROM_FRAME_RESCALE * 1000 * this->size * vs->avg_frame_rate.den
-                        / (avg_frame_bytes_size * vs->avg_frame_rate.num
-                           + 1); // rescale to avoid over estimating, add 1 because avg_frame_rate can be 0 !
-                    wanted_ms_place = (double)ms_stream_duration * percent * ofDuration / (100 * 100 /*percents*/);
-                    wanted_ts =
-                        vs->time_base.den * wanted_ms_place / (vs->time_base.num * 1000 /*we have ms duration*/);
-                    this->duration = ms_stream_duration;
-#ifdef DEBUG_VIDEO_READING
-                    qDebug() << "No video duration : trying to estimate from file size and frame size : "
-                             << " frame pkt size " << vPacket->size << " avg " << frames_estimated << " frames size "
-                             << avg_frame_bytes_size << " for file size (in bytes)" << size
-                             << " making estimated nb frames " << size / avg_frame_bytes_size
-                             << " or estimated duration "
-                             << msToHHMMSS(1000 * vs->avg_frame_rate.den * size
-                                           / (avg_frame_bytes_size * vs->avg_frame_rate.num));
-#endif
-                    if (frames_estimated == ESTIMATE_DURATION_FROM_FRAME_NB) {
-                        if (ffmpeg::av_seek_frame(fmt_ctx, stream_index, wanted_ts,
-                                                  AVSEEK_FLAG_BACKWARD /* 0 for no flags*/)
-                            < 0)
-                        { // will seek to closest previous keyframe
-                            qDebug() << "failed to seek to frame at timestamp "
-                                     << msToHHMMSS(1000 * wanted_ts * vs->time_base.num / vs->time_base.den)
-                                     << " for file " << _filePathName;
-                            ffmpeg::av_packet_free(&vPacket);
-                            ffmpeg::av_frame_free(&vFrame);
-                            ffmpeg::avcodec_free_context(&codec_ctx);
-                            ffmpeg::avformat_close_input(&fmt_ctx);
-                            return img;
-                        }
-                    }
-                }
-                if ((curr_ts - wanted_ts) >= -ts_diff) { // must read frames until we get before wanted time stamp
-                    img = getQImageFromFrame(vFrame, capturePresentationRotation);
-                    if (img.isNull()) {
-                        qDebug() << "Failed to save img for file " << _filePathName;
-                        ffmpeg::av_packet_free(&vPacket);
-                        ffmpeg::av_frame_free(&vFrame);
-                        ffmpeg::avcodec_free_context(&codec_ctx);
-                        ffmpeg::avformat_close_input(&fmt_ctx);
-                        return QImage();
-                    }
-                    readFrame = true;
-                }
-            }
-            else {
-#ifdef DEBUG_VIDEO_READING
-                qDebug() << "Failed to receive frame for " << _filePathName;
-#endif
-            }
+        if (vPacket->stream_index != stream_index) {
+            ffmpeg::av_packet_unref(vPacket);
+            continue;
         }
-        else {
-#ifdef DEBUG_VIDEO_READING
-            qDebug() << "Packet not of wanted stream for " << _filePathName;
-#endif
-            if (ret == AVERROR_EOF) {
-                // TODO : could actually update stream duration because we know it more accurately now !!!
-                qDebug() << "Reached end of file, no more stream packets, found no matching frame for "
-                         << _filePathName;
-                ffmpeg::av_packet_free(&vPacket);
-                ffmpeg::av_frame_free(&vFrame);
-                ffmpeg::avcodec_free_context(&codec_ctx);
-                ffmpeg::avformat_close_input(&fmt_ctx);
-                return img;
+        lastPacketSize = vPacket->size;
+        int sent = ffmpeg::avcodec_send_packet(codec_ctx, vPacket);
+        if (sent == AVERROR(EAGAIN)) { // decoder full: take its frames out, then the packet fits
+            outcome = receiveFrames();
+            if (outcome != 0) {
+                ffmpeg::av_packet_unref(vPacket);
+                break;
             }
+            sent = ffmpeg::avcodec_send_packet(codec_ctx, vPacket);
         }
         ffmpeg::av_packet_unref(vPacket);
-        ffmpeg::av_frame_unref(vFrame);
+        if (sent < 0 && sent != AVERROR(EAGAIN)) {
+            // A corrupt packet: skip it like players do; the decoder conceals the damage in following frames.
+            if (++skippedCorruptPackets > _maxSkippedCorruptPackets) {
+                qDebug() << "Too many corrupt packets (" << skippedCorruptPackets << "), giving up for file "
+                         << _filePathName;
+                outcome = -1;
+                break;
+            }
+#ifdef DEBUG_VIDEO_READING
+            qDebug() << "Skipping corrupt packet for file " << _filePathName;
+#endif
+            continue;
+        }
+        outcome = receiveFrames();
     }
 
-    ffmpeg::av_packet_free(&vPacket);
-    ffmpeg::av_frame_free(&vFrame);
-    ffmpeg::avcodec_free_context(&codec_ctx);
-    ffmpeg::avformat_close_input(&fmt_ctx);
+    if (outcome == 0 && reachedEnd && haveLastFrame) {
+        // The file ended before the wanted position.
+        if (durationWasEstimated && !_durationLearnedAtEnd && lastFrameTs != AV_NOPTS_VALUE && vs->time_base.den != 0) {
+            // The duration was guessed from the file size and was too long. Now the real end is known: record it and
+            // capture again at the intended position, so this video samples the same places as its duplicates.
+            int64_t start = vs->start_time != AV_NOPTS_VALUE ? vs->start_time : 0;
+            const int64_t realMs = 1000 * (lastFrameTs - start + ts_diff) * vs->time_base.num / vs->time_base.den;
+            if (realMs > 0) {
+                _durationLearnedAtEnd = true;
+                this->duration = realMs;
+                ffmpeg::av_frame_free(&lastFrame);
+                freeAll();
+                return ffmpegLib_captureAt(percent, ofDuration);
+            }
+        }
+        img = getQImageFromFrame(lastFrame, capturePresentationRotation);
+#ifdef DEBUG_VIDEO_READING
+        qDebug() << "Reached end of file before wanted position, using last frame for " << _filePathName;
+#endif
+    }
+    else if (outcome == 0 && reachedEnd) {
+        qDebug() << "Reached end of file, no more stream packets, found no matching frame for " << _filePathName;
+    }
+
+    ffmpeg::av_frame_free(&lastFrame);
+    freeAll();
 
     if (img.isNull())
-        qDebug() << "ERROR with taking frame function, it is empty but shouldn't be !!! " << _filePathName;
+        qDebug() << "Could not capture a frame at " << percent << "% for " << _filePathName;
 #ifdef DEBUG_VIDEO_READING
     else {
         qDebug() << "Library capture success at timestamp " << msToHHMMSS(wanted_ms_place) << " for file "
@@ -860,9 +907,22 @@ QImage Video::ffmpegLib_captureAt(const int percent, const int ofDuration)
 
 QImage Video::getQImageFromFrame(const ffmpeg::AVFrame* pFrame, int presentationRotation) const
 {
-    // first convert frame to rgb24
+    // Remember the decoded size (in presentation orientation) for the metadata consistency check.
+    _lastCaptureSourceSize = (presentationRotation == 90 || presentationRotation == 270)
+                                 ? QSize(pFrame->height, pFrame->width)
+                                 : QSize(pFrame->width, pFrame->height);
+
+    // Convert to rgb24, downscaling in the same pass so that 8K frames never exist as full-size RGB images.
+    int outWidth = pFrame->width;
+    int outHeight = pFrame->height;
+    const int longest = qMax(outWidth, outHeight);
+    if (longest > _maxCaptureEdge) {
+        const double scale = static_cast<double>(_maxCaptureEdge) / longest;
+        outWidth = qMax(1, qRound(outWidth * scale));
+        outHeight = qMax(1, qRound(outHeight * scale));
+    }
     ffmpeg::SwsContext* img_convert_ctx = ffmpeg::sws_getContext(
-        pFrame->width, pFrame->height, (ffmpeg::AVPixelFormat)pFrame->format, pFrame->width, pFrame->height,
+        pFrame->width, pFrame->height, (ffmpeg::AVPixelFormat)pFrame->format, outWidth, outHeight,
         ffmpeg::AV_PIX_FMT_RGB24,
 #if LIBSWSCALE_VERSION_MAJOR >= 8
         ffmpeg::swsBicubic, NULL, NULL, NULL); // TODO : could we change to something else than bicubic ???
@@ -957,13 +1017,18 @@ QImage Video::getQImageFromFrame(const ffmpeg::AVFrame* pFrame, int presentation
 
     // ---------------------------
     // Possibility 4 : modif attempt of 3 to do memcopy
-    QImage image(pFrame->width, pFrame->height, QImage::Format_RGB888);
+    QImage image(outWidth, outHeight, QImage::Format_RGB888);
+    if (image.isNull()) {
+        qDebug() << "Error allocating image for frame conversion " << _filePathName;
+        ffmpeg::sws_freeContext(img_convert_ctx);
+        return QImage();
+    }
 
     int rgb_linesizes[8] = {0};
-    rgb_linesizes[0] = 3 * pFrame->width;
+    rgb_linesizes[0] = 3 * outWidth;
 
-    unsigned char* rgbData[8];
-    int imgBytesSyze = 3 * pFrame->height * pFrame->width;
+    unsigned char* rgbData[8] = {nullptr};
+    const size_t imgBytesSyze = static_cast<size_t>(3) * outHeight * outWidth;
     rgbData[0] = (unsigned char*)malloc(imgBytesSyze + 64); // ask for extra bytes just to be safe
     if (!rgbData[0]) {
         qDebug() << "Error allocating buffer for frame conversion " << _filePathName;
@@ -975,7 +1040,7 @@ QImage Video::getQImageFromFrame(const ffmpeg::AVFrame* pFrame, int presentation
             img_convert_ctx, pFrame->data, pFrame->linesize, 0, pFrame->height,
             rgbData, // ideally should be (uint8_t *[]){image.bits()} but not possible as explained below, QImage lines are at least 32 bit aligned
             rgb_linesizes)
-        != pFrame->height)
+        != outHeight)
     {
         qDebug() << "Error changing frame color range " << _filePathName;
         free(rgbData[0]);
@@ -990,8 +1055,9 @@ QImage Video::getQImageFromFrame(const ffmpeg::AVFrame* pFrame, int presentation
     // So doing sws_scale with output data being QImage.bits() works for all source frames that are "by chance" 32 bit aligned, but
     // not others. Thus, we have another buffer, and copy afterwards to qimage, although this means sws_scale copies, and we copy so it's
     // two times the same operation...
-    for (int y = 0; y < pFrame->height; y++)
-        memcpy(image.scanLine(y), rgbData[0] + y * 3 * pFrame->width, 3 * pFrame->width);
+    for (int y = 0; y < outHeight; y++)
+        memcpy(image.scanLine(y), rgbData[0] + static_cast<size_t>(y) * 3 * outWidth,
+               static_cast<size_t>(3) * outWidth);
 
     free(rgbData[0]);
     ffmpeg::sws_freeContext(img_convert_ctx);
