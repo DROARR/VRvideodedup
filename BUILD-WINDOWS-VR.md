@@ -101,6 +101,14 @@ cmake --build build --config Release --parallel --target video-simili-duplicate-
 
 ## If the build fails
 
+- **`'cmake' is not recognized as an internal or external command`**: you're in a normal Command Prompt or PowerShell.
+  Close it and open **"x64 Native Tools Command Prompt for VS 2022"** from the Start menu (type `x64 Native` to find
+  it). Check with `where cmake`: it should print a path inside `Microsoft Visual Studio\2022\BuildTools`.
+  - If that prompt isn't in the Start menu, or `where cmake` still finds nothing: open **Visual Studio Installer**,
+    click **Modify** on Build Tools 2022, tick **Desktop development with C++**, make sure
+    **C++ CMake tools for Windows** is ticked on the right, and click **Modify** to install.
+- **`'git' is not recognized`**: install Git for Windows (step 1.2), then open a **new** prompt.
+
 - `VCPKG_ROOT` not set / "Could not find toolchain file" / `vcpkg.cmake` not found: redo the check in step 1.4,
   then open a **new** x64 Native Tools prompt (prompts opened before `setx` don't see the change). For just the
   current prompt you can also run `set VCPKG_ROOT=C:\VCpkg` (your folder, no quotes).
