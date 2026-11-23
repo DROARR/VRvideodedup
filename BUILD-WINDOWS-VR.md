@@ -21,7 +21,30 @@ takes **1 to 3 hours** and about **30 GB** of disk. Later builds take a few minu
    ```
    Close that window afterwards so the new `VCPKG_ROOT` setting takes effect.
 
-Use short folder paths (like `C:\vcpkg` and `C:\src`). Long paths make the Qt build fail.
+   If you already have vcpkg in another folder (for example `C:\VCpkg`), use that folder instead of `C:\vcpkg`
+   in these commands. Upper/lower case doesn't matter on Windows: `C:\VCpkg` and `C:\vcpkg` are the same folder.
+
+4. **Check that the build can find vcpkg.** Open a **new** Command Prompt and run:
+   ```bat
+   echo %VCPKG_ROOT%
+   dir "%VCPKG_ROOT%\vcpkg.exe"
+   ```
+   - **It prints your vcpkg folder and finds `vcpkg.exe`:** done, go to step 2.
+   - **It prints `%VCPKG_ROOT%` (not set) or a different folder:** set it to your vcpkg folder's full path (open the
+     folder in File Explorer and click the address bar to see it), for example:
+     ```bat
+     setx VCPKG_ROOT "C:\VCpkg"
+     ```
+     Then close the Command Prompt, open a new one, and run the two check commands again.
+   - **`vcpkg.exe` is not found (File Not Found):** vcpkg's one-time setup hasn't run yet:
+     ```bat
+     "%VCPKG_ROOT%\bootstrap-vcpkg.bat" -disableMetrics
+     ```
+     Then run the check again.
+
+Use short folder paths (like `C:\vcpkg` or `C:\VCpkg`, and `C:\src`). Long paths, such as folders deep inside
+Documents, make the Qt build fail with "path too long" errors. Also keep vcpkg and the code **out of OneDrive-synced
+folders**: syncing locks files while they're being built and breaks the build.
 
 ## 2. Get the code
 
@@ -78,7 +101,9 @@ cmake --build build --config Release --parallel --target video-simili-duplicate-
 
 ## If the build fails
 
-- `VCPKG_ROOT` not set / toolchain file not found: reopen the x64 Native Tools prompt after step 1.3, or run
-  `set VCPKG_ROOT=C:\vcpkg` in the prompt.
-- "path too long" or random Qt build errors: make sure the code and vcpkg are in short paths (`C:\src`, `C:\vcpkg`).
+- `VCPKG_ROOT` not set / "Could not find toolchain file" / `vcpkg.cmake` not found: redo the check in step 1.4,
+  then open a **new** x64 Native Tools prompt (prompts opened before `setx` don't see the change). For just the
+  current prompt you can also run `set VCPKG_ROOT=C:\VCpkg` (your folder, no quotes).
+- "path too long" or random Qt build errors: make sure the code and vcpkg are in short paths (`C:\src`, `C:\VCpkg`)
+  and not inside OneDrive.
 - Anything else: copy the last ~30 lines of the output, they show the real error.
