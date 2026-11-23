@@ -51,7 +51,7 @@ folders**: syncing locks files while they're being built and breaks the build.
 ```bat
 mkdir C:\src
 cd C:\src
-git clone <this repository's URL> video-simili-vr
+git clone https://github.com/DROARR/VRvideodedup.git video-simili-vr
 ```
 
 ## 3. Build
