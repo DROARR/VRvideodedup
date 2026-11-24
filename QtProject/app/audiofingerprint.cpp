@@ -3,6 +3,7 @@
 #include "ffmpeg.h"
 
 #include <QDir>
+#include <QFile>
 
 #include "opencv2/core.hpp"
 #include "opencv2/imgproc.hpp"
@@ -194,6 +195,40 @@ double streamSeconds(int64_t timestamp, ffmpeg::AVRational timeBase)
     return static_cast<double>(timestamp) * timeBase.num / timeBase.den;
 }
 
+// Reading sound means reading most of a large file, a little at a time: FFmpeg's default 32 KB reads, or jumps to
+// each small piece of sound between video frames. On external and network drives every read pays a round trip, and
+// a 30 minute 8K VR file took ~10 minutes over USB while barely using the disk. Reading through our own large
+// buffer makes every layout cost far fewer, bigger reads, and jumps within the buffer cost nothing.
+constexpr int READ_BUFFER_BYTES = 4 * 1024 * 1024;
+
+int readFile(void* opaque, uint8_t* buffer, int size)
+{
+    const qint64 read = static_cast<QFile*>(opaque)->read(reinterpret_cast<char*>(buffer), size);
+    if (read == 0)
+        return AVERROR_EOF;
+    return read < 0 ? AVERROR(EIO) : static_cast<int>(read);
+}
+
+int64_t seekFile(void* opaque, int64_t offset, int whence)
+{
+    auto* file = static_cast<QFile*>(opaque);
+    switch (whence & ~AVSEEK_FORCE) {
+    case AVSEEK_SIZE:
+        return file->size();
+    case SEEK_SET:
+        break;
+    case SEEK_CUR:
+        offset += file->pos();
+        break;
+    case SEEK_END:
+        offset += file->size();
+        break;
+    default:
+        return AVERROR(EINVAL);
+    }
+    return file->seek(offset) ? offset : AVERROR(EIO);
+}
+
 uint32_t mixHash(uint32_t hash)
 {
     hash ^= hash >> 16;
@@ -207,22 +242,48 @@ ExtractionResult extractPeaks(const QString& filePathName)
 {
     ExtractionResult result;
     ffmpeg::av_log_set_level(AV_LOG_FATAL);
-    ffmpeg::AVFormatContext* formatContext = nullptr;
-    if (ffmpeg::avformat_open_input(&formatContext, QDir::toNativeSeparators(filePathName).toStdString().c_str(),
-                                    nullptr, nullptr)
-        < 0)
-    {
+    QFile file(filePathName);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Unbuffered)) {
+        result.error = QStringLiteral("could not open file to read its sound");
+        return result;
+    }
+    auto* readBuffer = static_cast<unsigned char*>(ffmpeg::av_malloc(READ_BUFFER_BYTES));
+    ffmpeg::AVIOContext* io =
+        ffmpeg::avio_alloc_context(readBuffer, READ_BUFFER_BYTES, 0, &file, readFile, nullptr, seekFile);
+    ffmpeg::AVFormatContext* formatContext = ffmpeg::avformat_alloc_context();
+    if (io == nullptr || formatContext == nullptr) {
+        ffmpeg::avformat_free_context(formatContext);
+        if (io != nullptr)
+            ffmpeg::av_freep(&io->buffer);
+        else
+            ffmpeg::av_free(readBuffer);
+        ffmpeg::avio_context_free(&io);
+        result.error = QStringLiteral("could not allocate memory to read its sound");
+        return result;
+    }
+    formatContext->pb = io;
+    formatContext->flags |= AVFMT_FLAG_CUSTOM_IO;
+    // The context owns the buffer, which FFmpeg may replace while reading, so free it through the context.
+    const auto freeIo = [&io]() {
+        ffmpeg::av_freep(&io->buffer);
+        ffmpeg::avio_context_free(&io);
+    };
+    // On failure avformat_open_input frees the format context, but never a custom I/O context.
+    if (ffmpeg::avformat_open_input(&formatContext, nullptr, nullptr, nullptr) < 0) {
+        freeIo();
         result.error = QStringLiteral("could not open file to read its sound");
         return result;
     }
     if (ffmpeg::avformat_find_stream_info(formatContext, nullptr) < 0) {
         ffmpeg::avformat_close_input(&formatContext);
+        freeIo();
         result.error = QStringLiteral("could not find stream information to read its sound");
         return result;
     }
     const int audioIndex = ffmpeg::av_find_best_stream(formatContext, ffmpeg::AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
     if (audioIndex < 0) {
         ffmpeg::avformat_close_input(&formatContext);
+        freeIo();
         return result; // no soundtrack: not an error, the video simply cannot be matched by sound
     }
     result.hasAudio = true;
@@ -249,6 +310,7 @@ ExtractionResult extractPeaks(const QString& filePathName)
     {
         ffmpeg::avcodec_free_context(&codecContext);
         ffmpeg::avformat_close_input(&formatContext);
+        freeIo();
         result.error = QStringLiteral("no decoder for its %1 sound")
                            .arg(ffmpeg::avcodec_get_name(audioStream->codecpar->codec_id));
         return result;
@@ -349,6 +411,7 @@ ExtractionResult extractPeaks(const QString& filePathName)
     ffmpeg::av_packet_free(&packet);
     ffmpeg::avcodec_free_context(&codecContext);
     ffmpeg::avformat_close_input(&formatContext);
+    freeIo();
     return result;
 }
 
