@@ -77,7 +77,8 @@ void BackgroundMatchDiscovery::start(const QVector<Video*>& videos, const VideoP
                                                                 configSnapshot);
                     if (result.matches) {
                         matches.append(
-                            {pair.left, pair.right, pair.position, result.phashSimilarity, result.ssimSimilarity});
+                            {pair.left, pair.right, pair.position, result.phashSimilarity, result.ssimSimilarity,
+                             result.trimmedCopy});
                     }
 
                     if (pair.position >= lastPosition)

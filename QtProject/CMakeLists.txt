@@ -117,6 +117,10 @@ set(PROJECT_SOURCES
     app/videodiscovery.h
     app/video.cpp
     app/video.h
+    app/audiofingerprint.cpp
+    app/audiofingerprint.h
+    app/trimmedcopyfinder.cpp
+    app/trimmedcopyfinder.h
     app/visualfingerprint.cpp
     app/visualfingerprint.h
     app/comparison/comparison.cpp

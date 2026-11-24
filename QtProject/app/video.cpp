@@ -1,5 +1,7 @@
 #include "video.h"
 
+#include "audiofingerprint.h"
+
 #include <cmath>
 #include <memory>
 
@@ -15,22 +17,6 @@ int Video::_jpegQuality = _okJpegQuality;
 
 namespace
 {
-// Cover art is AVMEDIA_TYPE_VIDEO too. FFmpeg's "V" specifier excludes attached pictures
-// and timed thumbnails, which cannot be sought like ordinary video (Ogg can assert and abort).
-// Share this choice between metadata and capture, including when metadata came from the cache.
-int findVideoStream(ffmpeg::AVFormatContext* context)
-{
-    const int best = ffmpeg::av_find_best_stream(context, ffmpeg::AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
-    if (best < 0 || ffmpeg::avformat_match_stream_specifier(context, context->streams[best], "V") > 0)
-        return best;
-
-    for (unsigned int index = 0; index < context->nb_streams; ++index) {
-        if (ffmpeg::avformat_match_stream_specifier(context, context->streams[index], "V") > 0)
-            return static_cast<int>(index);
-    }
-    return AVERROR_STREAM_NOT_FOUND;
-}
-
 int normalizedRightAngle(int angle)
 {
     angle %= 360;
@@ -135,12 +121,35 @@ Video::ProcessingResult Video::process()
         return result;
     }
 
+    if (_prefs.detectTrimmedCopies())
+        processAudio(cache.get());
+
     result.success = true;
     // Cache metadata only after a full successful run: duration may still be 0 after metadata extraction
     // and get inferred later while decoding frames, so we wait until both stages finish.
     if (_prefs.useCacheOption() == Prefs::WITH_CACHE && !metadataCached)
         cache->writeMetadata(*this);
     return result;
+}
+
+void Video::processAudio(const Db* cache)
+{
+    if (cache != nullptr && cache->readAudioPeaks(_filePathName, audioPeaks)) {
+        audioPeaksAvailable = !audioPeaks.empty();
+        return;
+    }
+    if (_prefs.useCacheOption() == Prefs::CACHE_ONLY)
+        return;
+
+    AudioFingerprint::ExtractionResult extraction = AudioFingerprint::extractPeaks(_filePathName);
+    if (!extraction.error.isEmpty() && _prefs.isVerbose())
+        Message::Get()->add(QStringLiteral("Sound of %1 could not be fully read, so it may be missed as a trimmed copy: %2")
+                                .arg(QDir::toNativeSeparators(_filePathName), extraction.error));
+    audioPeaks = std::move(extraction.peaks);
+    audioPeaksAvailable = !audioPeaks.empty();
+    // Only cache complete reads: a transient read error must not become this video's sound for later scans.
+    if (extraction.error.isEmpty() && _prefs.useCacheOption() == Prefs::WITH_CACHE && cache != nullptr)
+        cache->writeAudioPeaks(_filePathName, audioPeaks);
 }
 
 QString Video::validateInput() const
@@ -541,6 +550,19 @@ QString Video::msToHHMMSS(const int64_t& time) const // miliseconds to user read
 
 QImage Video::ffmpegLib_captureAt(const int percent, const int ofDuration)
 {
+    return captureFrame(percent, ofDuration, -1);
+}
+
+QImage Video::ffmpegLib_captureAtMs(const int64_t milliseconds)
+{
+    return captureFrame(0, 100, milliseconds);
+}
+
+QImage Video::captureFrame(const int percent, const int ofDuration, const int64_t exactMs)
+{
+    // exactMs >= 0 asks for the frame at that time from the video stream's first frame, for comparing pictures at
+    // the times where two soundtracks line up; otherwise the position is a percentage of the duration as always.
+    const bool exactPosition = exactMs >= 0;
     ffmpeg::av_log_set_level(AV_LOG_FATAL);
 #ifdef DEBUG_VIDEO_READING
     // NB Here a lot of debug elements are kept as is, because they quickly enable diagnstics of new or problematic
@@ -646,7 +668,7 @@ QImage Video::ffmpegLib_captureAt(const int percent, const int ofDuration)
         ms_stream_duration = duration;
     int frames_estimated = -1;    // duration estimation from frame size (bytes) and file size. Disabled if -1
     int avg_frame_bytes_size = 1; // avoid 0 division
-    if (ms_stream_duration == 0)
+    if (ms_stream_duration == 0 && !exactPosition) // an exact time does not depend on the duration
         frames_estimated = 0;
     // TODO : we use stream duration here, not duration gotten from metadata,
     //        but sometimes metadata file duration is very different => should find a way to report it
@@ -657,7 +679,8 @@ QImage Video::ffmpegLib_captureAt(const int percent, const int ofDuration)
                  << ") (we're using video stream duration for captures) " << _filePathName;
     }
 #endif
-    int64_t wanted_ms_place = (double)ms_stream_duration * percent * ofDuration / (100 * 100 /*percents*/);
+    int64_t wanted_ms_place =
+        exactPosition ? exactMs : (double)ms_stream_duration * percent * ofDuration / (100 * 100 /*percents*/);
     int64_t ts_diff = 0;
     if (vs->avg_frame_rate.num != 0 && vs->time_base.num != 0)
     { // avg framerate can be 0/0 -> add 1 and ts_diff can be 0
@@ -672,6 +695,10 @@ QImage Video::ffmpegLib_captureAt(const int percent, const int ofDuration)
     int64_t wanted_ts = 0;
     if (vs->time_base.num != 0)
         wanted_ts = vs->time_base.den * wanted_ms_place / (vs->time_base.num * 1000 /*we have ms duration*/);
+    // Sound fingerprints measure times from the video stream's start, so exact positions do too. Percentage captures
+    // keep their established positions, which cached captures and duplicates scanned by earlier versions rely on.
+    if (exactPosition && vs->start_time != AV_NOPTS_VALUE)
+        wanted_ts += vs->start_time;
 #ifdef DEBUG_VIDEO_READING
     qDebug() << "wanted_ms_place " << wanted_ms_place << " for video stream ms duration " << ms_stream_duration;
     qDebug() << "ts_diff_between_images " << ts_diff << " in terms of time "
@@ -879,7 +906,7 @@ QImage Video::ffmpegLib_captureAt(const int percent, const int ofDuration)
                 this->duration = realMs;
                 ffmpeg::av_frame_free(&lastFrame);
                 freeAll();
-                return ffmpegLib_captureAt(percent, ofDuration);
+                return captureFrame(percent, ofDuration, exactMs);
             }
         }
         img = getQImageFromFrame(lastFrame, capturePresentationRotation);

@@ -310,6 +310,7 @@ bool Comparison::bothVideosMatch(const Video* left, const Video* right)
     _phashSimilarity = result.phashSimilarity;
     _ssimSimilarity = result.ssimSimilarity;
     _matchRotation = result.rotation;
+    _trimmedCopy = result.trimmedCopy;
     if (!result.matches)
         return false;
     // check if pair is flagged as not dupplicate in DB. DB is very slow so only do this after all checks
@@ -369,7 +370,7 @@ bool Comparison::navigateToNextMatch(int64_t fromPosition)
         const auto result = VideoPairMatcher::match(*_videos[cursor.left], *_videos[cursor.right], config);
         if (result.matches) {
             const MatchedVideoPair pair = {cursor.left, cursor.right, cursor.position, result.phashSimilarity,
-                                           result.ssimSimilarity};
+                                           result.ssimSimilarity, result.trimmedCopy};
             if (isPairStillDisplayable(pair)) {
                 displayMatchedPair(pair);
                 return true;
@@ -408,7 +409,7 @@ bool Comparison::navigateToPrevMatch(int64_t fromPosition, int64_t throughPositi
         const auto result = VideoPairMatcher::match(*_videos[cursor.left], *_videos[cursor.right], config);
         if (result.matches) {
             const MatchedVideoPair pair = {cursor.left, cursor.right, cursor.position, result.phashSimilarity,
-                                           result.ssimSimilarity};
+                                           result.ssimSimilarity, result.trimmedCopy};
             if (isPairStillDisplayable(pair)) {
                 displayMatchedPair(pair);
                 return true;
@@ -453,6 +454,7 @@ void Comparison::displayMatchedPair(const MatchedVideoPair& pair)
     _rightVideo = pair.right;
     _phashSimilarity = pair.phashSimilarity;
     _ssimSimilarity = pair.ssimSimilarity;
+    _trimmedCopy = pair.trimmedCopy;
     showVideo(QStringLiteral("left"));
     showVideo(QStringLiteral("right"));
     highlightBetterProperties();
@@ -756,10 +758,27 @@ void Comparison::updateUI()
         ui->rightMove->setDisabled(false);
     }
 
-    if (this->_prefs.comparisonMode() == Prefs::_PHASH)
-        ui->identicalBits->setText(QString("%1/64 same bits").arg(_phashSimilarity));
-    if (this->_prefs.comparisonMode() == Prefs::_SSIM)
-        ui->identicalBits->setText(QString("%1 SSIM index").arg(QString::number(qMin(_ssimSimilarity, 1.0), 'f', 3)));
+    if (_trimmedCopy) {
+        // left time = right time + offset: a positive offset means the same moments come later in the left video.
+        const double offsetSeconds = _trimmedCopy->offsetMs / 1000.0;
+        ui->identicalBits->setText(QStringLiteral("Offset copy: %1 of same sound, moments %2s later in %3")
+                                       .arg(readableDuration(_trimmedCopy->overlapMs))
+                                       .arg(QString::number(qAbs(offsetSeconds), 'f', 1))
+                                       .arg(offsetSeconds >= 0 ? QStringLiteral("left") : QStringLiteral("right")));
+        ui->identicalBits->setToolTip(
+            QStringLiteral("Trimmed, cut, re-introduced or remastered copy: found by its soundtrack, then confirmed "
+                           "by comparing pictures at the matching times (%1/64 same bits at worst). Their lengths "
+                           "differ, so automatic deletion skips this pair.")
+                .arg(_trimmedCopy->pictureSimilarity));
+    }
+    else {
+        ui->identicalBits->setToolTip(QString());
+        if (this->_prefs.comparisonMode() == Prefs::_PHASH)
+            ui->identicalBits->setText(QString("%1/64 same bits").arg(_phashSimilarity));
+        if (this->_prefs.comparisonMode() == Prefs::_SSIM)
+            ui->identicalBits->setText(
+                QString("%1 SSIM index").arg(QString::number(qMin(_ssimSimilarity, 1.0), 'f', 3)));
+    }
     _zoomLevel = 0;
     ui->progressBar->setValue(progressBarValue(comparisonsSoFar()));
 }
@@ -1451,7 +1470,7 @@ void Comparison::on_identicalFilesAutoTrash_clicked()
     QVector<Video*>::const_iterator left, right, begin = _videos.cbegin(), end = _videos.cend();
     for (left = begin + _leftVideo; left < end; left++, _leftVideo++) {
         for (_rightVideo++, right = begin + _rightVideo; right < end; right++, _rightVideo++) {
-            if (bothVideosMatch(*left, *right) && QFileInfo::exists((*left)->_filePathName)
+            if (bothVideosMatch(*left, *right) && !_trimmedCopy && QFileInfo::exists((*left)->_filePathName)
                 && !(*left)->trashed // check trashed in case it is from Apple Photos
                 && QFileInfo::exists((*right)->_filePathName) && !(*right)->trashed)
             {
@@ -1574,7 +1593,7 @@ void Comparison::on_autoDelOnlySizeDiffersButton_clicked()
     QVector<Video*>::const_iterator left, right, begin = _videos.cbegin(), end = _videos.cend();
     for (left = begin + _leftVideo; left < end; left++, _leftVideo++) {
         for (_rightVideo++, right = begin + _rightVideo; right < end; right++, _rightVideo++) {
-            if (bothVideosMatch(*left, *right) && QFileInfo::exists((*left)->_filePathName)
+            if (bothVideosMatch(*left, *right) && !_trimmedCopy && QFileInfo::exists((*left)->_filePathName)
                 && !(*left)->trashed // check trashed in case it is from Apple Photos
                 && QFileInfo::exists((*right)->_filePathName) && !(*right)->trashed)
             {
@@ -1687,7 +1706,7 @@ void Comparison::autoDeleteLoopthrough(const AutoDeleteConfig autoDelConfig)
     QVector<Video*>::const_iterator left, right, begin = _videos.cbegin(), end = _videos.cend();
     for (left = begin + _leftVideo; left < end; left++, _leftVideo++) {
         for (_rightVideo++, right = begin + _rightVideo; right < end; right++, _rightVideo++) {
-            if (bothVideosMatch(*left, *right) && QFileInfo::exists((*left)->_filePathName)
+            if (bothVideosMatch(*left, *right) && !_trimmedCopy && QFileInfo::exists((*left)->_filePathName)
                 && !(*left)->trashed // check trashed in case it is from Apple Photos
                 && QFileInfo::exists((*right)->_filePathName) && !(*right)->trashed)
             {

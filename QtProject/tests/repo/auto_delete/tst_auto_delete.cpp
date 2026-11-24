@@ -30,6 +30,7 @@ class TestAutoDelete : public QObject
     void test_matchingFeaturePairs();
     void test_keepBiggestMovesLetterboxedCopy();
     void test_keepBiggestMovesRotatedCopyWithResolutionCheck();
+    void test_keepBiggestSkipsCopyFoundBySound();
 
   private:
     QString samplesDirPath() const;
@@ -297,6 +298,60 @@ void TestAutoDelete::test_keepBiggestMovesRotatedCopyWithResolutionCheck()
              qPrintable(QStringLiteral("Expected video in trash: %1").arg(originalName)));
 
     w.ui->detectRotatedCopiesCheckbox->setChecked(false);
+    w.close();
+    QCoreApplication::processEvents();
+}
+
+// a-remaster.mp4 is a-full.mp4 regraded, upscaled and with other sound: same length, bigger file. At the strictest
+// picture threshold only the sound search pairs them, and automatic deletion must then leave both files alone,
+// because copies found at an offset can differ in content (trims, cuts, intros) and need a human decision.
+void TestAutoDelete::test_keepBiggestSkipsCopyFoundBySound()
+{
+    const QString fullName = QStringLiteral("a-full.mp4");
+    const QString remasterName = QStringLiteral("a-remaster.mp4");
+    const QString trimmedDir = QDir(samplesDirPath()).filePath(QStringLiteral("trimmed"));
+
+    QTemporaryDir testVideosDir;
+    QVERIFY2(testVideosDir.isValid(), "Could not create temporary video folder");
+    QTemporaryDir trashDir;
+    QVERIFY2(trashDir.isValid(), "Could not create temporary trash folder");
+    const QString fullPath = testVideosDir.filePath(fullName);
+    const QString remasterPath = testVideosDir.filePath(remasterName);
+    QVERIFY(QFile::copy(QDir(trimmedDir).filePath(fullName), fullPath));
+    QVERIFY(QFile::copy(QDir(trimmedDir).filePath(remasterName), remasterPath));
+
+    Prefs prefs;
+    Db::emptyAllDb(prefs);
+
+    MainWindow w;
+    w.show();
+    w._prefs.useCacheOption(Prefs::NO_CACHE);
+    w._prefs.delMode = Prefs::CUSTOM_TRASH;
+    w._prefs.customTrashFolder(QDir(trashDir.path()));
+    w.on_thresholdSlider_valueChanged(100);
+    w.ui->detectTrimmedCopiesCheckbox->setChecked(true);
+    w._everyVideo = discoverVideos({testVideosDir.path()}, w._extensionList).videos;
+    w.processVideos();
+    QCOMPARE(w._videoList.count(), 2);
+    w.findTrimmedCopies();
+    QVERIFY(w._prefs._trimmedCopyMatches != nullptr);
+    QCOMPARE(w._prefs._trimmedCopyMatches->size(), 1);
+
+    Comparison comp(w._videoList, w._prefs, w.geometry());
+    QCOMPARE(comp.reportMatchingVideos(), 1);
+    QVERIFY2(comp._trimmedCopy.has_value(), "the pair should match by sound only, otherwise this test proves nothing");
+    comp.ui->disableDeleteConfirmationCheckbox->setChecked(true);
+    comp.ui->autoOnlySizeDontCheckResFpsCheckbox->setChecked(true);
+    QVERIFY(comp.ui->radioButton_onlySizeDiffers_keepBiggest->isChecked());
+    // Only the end-of-run summary: no pair qualified, so nothing asked to be confirmed.
+    acceptMessageBoxesDuring(1, [&comp] { comp.on_autoDelOnlySizeDiffersButton_clicked(); });
+
+    QVERIFY2(QFileInfo::exists(fullPath), qPrintable(QStringLiteral("Expected retained video: %1").arg(fullPath)));
+    QVERIFY2(QFileInfo::exists(remasterPath),
+             qPrintable(QStringLiteral("Expected retained video: %1").arg(remasterPath)));
+    QVERIFY(QDir(trashDir.path()).isEmpty());
+
+    w.ui->detectTrimmedCopiesCheckbox->setChecked(false);
     w.close();
     QCoreApplication::processEvents();
 }

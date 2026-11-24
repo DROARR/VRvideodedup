@@ -78,6 +78,13 @@ class Video : public QObject
     // returns empty image if ffmpegLib_captureAt failed and returned empty image
     QImage ffmpegLib_captureAt(const int percent,
                                const int ofDuration = 100); // new methods for capture of image, using ffmpeg library
+    // Frame at a time from the start of the video stream, the timeline sound fingerprints use. Empty if it failed.
+    QImage ffmpegLib_captureAtMs(int64_t milliseconds);
+
+    // Spectral peaks of the soundtrack, filled during processing when matching trimmed copies is enabled.
+    // audioPeaksAvailable is false when the video has no sound or it could not be read: it then only matches by picture.
+    std::vector<uint32_t> audioPeaks;
+    bool audioPeaksAvailable = false;
 
   private:
     struct ResolvedCapture {
@@ -89,6 +96,9 @@ class Video : public QObject
         QString error;
     };
 
+    QImage captureFrame(int percent, int ofDuration, int64_t exactMs);
+    // Reads (or extracts and caches) the soundtrack fingerprint. Never fails the video: sound is optional evidence.
+    void processAudio(const Db* cache);
     QString validateInput() const;
     QString processMetadata(bool metadataCached);
     QString processFrames(const Db* cache);

@@ -1,5 +1,6 @@
 #include "mainwindow.h"
 #include "prefs.h"
+#include "trimmedcopyfinder.h"
 #include <QElapsedTimer>
 #include <QProgressDialog>
 #include <QPromise>
@@ -79,6 +80,7 @@ MainWindow::MainWindow() : ui(new Ui::MainWindow)
     if (this->_prefs.isVerbose())
         ui->verboseCheckbox->setCheckState(Qt::Checked);
     ui->detectRotatedCopiesCheckbox->setChecked(this->_prefs.detectRotatedCopies());
+    ui->detectTrimmedCopiesCheckbox->setChecked(this->_prefs.detectTrimmedCopies());
     foreach (QString folder, this->_prefs.scanLocations()) {
         if (!folder.isEmpty())
             this->ui->directoryBox->insert(QStringLiteral("%1;").arg(QDir::toNativeSeparators(folder)));
@@ -256,8 +258,36 @@ void MainWindow::on_findDuplicates_clicked()
     finishFindDuplicates();
 }
 
+void MainWindow::findTrimmedCopies()
+{
+    if (!_prefs.detectTrimmedCopies() || _videoList.count() < 2) {
+        _prefs._trimmedCopyMatches = nullptr;
+        return;
+    }
+    addStatusMessage(QStringLiteral("\n[%1] Comparing soundtracks to find trimmed, cut and remastered copies...")
+                         .arg(QTime::currentTime().toString()));
+    TrimmedCopyFinder::Progress progress;
+    QFuture<TrimmedCopyMatches> search = QtConcurrent::run(
+        [this, &progress]() { return TrimmedCopyFinder::find(_videoList, _prefs, &progress); });
+    QProgressDialog dialog(QStringLiteral("Finding trimmed, cut and remastered copies"), QString(), 0, 1, this);
+    dialog.setWindowModality(Qt::WindowModal);
+    while (!search.isFinished()) {
+        dialog.setMaximum(qMax(1, progress.total.load()));
+        dialog.setValue(progress.done.load());
+        QApplication::processEvents();
+        QThread::msleep(20);
+    }
+    _prefs._trimmedCopyMatches = std::make_shared<const TrimmedCopyMatches>(search.result());
+    addStatusMessage(QStringLiteral("[%1] Found %2 pair(s) of trimmed, cut or remastered copies")
+                         .arg(QTime::currentTime().toString())
+                         .arg(_prefs._trimmedCopyMatches->size()));
+}
+
 void MainWindow::finishFindDuplicates()
 {
+    // Reopened results keep the pairs found by their own scan.
+    if (this->shouldScan)
+        findTrimmedCopies();
     if (_videoList.count() > 1) {
         this->_comparison = new Comparison(this->_videoList, this->_prefs, this->geometry());
         this->_comparison->hide();
@@ -346,6 +376,7 @@ void MainWindow::processVideos()
     if (_prefs._numberOfVideos > 0) {
         ui->selectThumbnails->setDisabled(true);
         ui->detectRotatedCopiesCheckbox->setDisabled(true);
+        ui->detectTrimmedCopiesCheckbox->setDisabled(true);
         ui->processedFiles->setVisible(true);
         if (this->_prefs.useCacheOption() != Prefs::CACHE_ONLY)
             ui->processedFiles->setText(QStringLiteral("0/%1").arg(_prefs._numberOfVideos));
@@ -455,6 +486,7 @@ void MainWindow::processVideos()
 
     ui->selectThumbnails->setDisabled(false);
     ui->detectRotatedCopiesCheckbox->setDisabled(false);
+    ui->detectTrimmedCopiesCheckbox->setDisabled(false);
     ui->processedFiles->setVisible(false);
     ui->progressBar->setVisible(false);
     ui->statusBar->setVisible(false);
@@ -583,6 +615,7 @@ void MainWindow::on_actionRestore_all_settings_triggered()
     on_actionRestore_simple_skip_of_error_videos_triggered();
     ui->verboseCheckbox->setCheckState(Qt::Unchecked);
     ui->detectRotatedCopiesCheckbox->setChecked(false);
+    ui->detectTrimmedCopiesCheckbox->setChecked(false);
 
     this->ui->directoryBox->clear();
 

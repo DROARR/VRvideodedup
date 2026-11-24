@@ -82,6 +82,8 @@ class MainWindow : public QMainWindow
     void videoDiscoveryFinished();
     void finishFindDuplicates();
     void processVideos();
+    // Searches the processed videos for copies at an offset, by sound, for this scan's comparisons.
+    void findTrimmedCopies();
     void videoSummary();
 
     void addStatusMessage(const QString& message) const;
@@ -117,6 +119,11 @@ class MainWindow : public QMainWindow
     {
         this->shouldScan = true;
         this->_prefs.detectRotatedCopies(checked);
+    }
+    void on_detectTrimmedCopiesCheckbox_toggled(bool checked)
+    {
+        this->shouldScan = true; // videos must be processed again to read their sound
+        this->_prefs.detectTrimmedCopies(checked);
     }
 
     void on_actionRestore_all_settings_triggered();

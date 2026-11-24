@@ -1,5 +1,9 @@
 #include "db.h"
 
+#include "audiofingerprint.h"
+
+#include <cstring>
+
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QVariantMap>
@@ -62,6 +66,7 @@ bool Db::emptyAllDb(const Prefs prefs)
         query.exec(QStringLiteral("DROP TABLE IF EXISTS metadata"));
         query.exec(QStringLiteral("DROP TABLE IF EXISTS capture"));
         query.exec(QStringLiteral("DROP TABLE IF EXISTS ignored_pairs"));
+        query.exec(QStringLiteral("DROP TABLE IF EXISTS audio_peaks"));
         query.exec(QStringLiteral("DROP TABLE IF EXISTS version"));
 
         query.exec(QStringLiteral("VACUUM")); // restructure sqlite file to make it smaller on disk
@@ -155,6 +160,15 @@ void Db::createTables(QSqlDatabase db, const QString appVersion)
                               "FOREIGN KEY (pathName2) REFERENCES metadata(id), "
                               "UNIQUE (pathName1, pathName2) "
                               "PRIMARY KEY (pathName1, pathName2) "
+                              ");"));
+
+    // Separate from capture: sound is only read when matching trimmed copies is enabled, and its rows are replaced
+    // whole when the fingerprint version changes.
+    query.exec(QStringLiteral("CREATE TABLE IF NOT EXISTS "
+                              "audio_peaks ("
+                              "id TEXT PRIMARY KEY, "
+                              "version INTEGER, "
+                              "peaks BLOB"
                               ");"));
 
     // Now create a version table and entry, that could help us in the future to check if the database contains old records
@@ -313,6 +327,10 @@ void Db::writeFailure(const QString& filePathname, const QString& failure) const
     query.bindValue(":id", filePathname);
     query.exec();
 
+    query.prepare("DELETE FROM audio_peaks WHERE id = :id;");
+    query.bindValue(":id", filePathname);
+    query.exec();
+
     query.prepare("INSERT OR REPLACE INTO metadata "
                   "(id, size, duration, bitrate, framerate, codec, audio, width, height, additional_metadata, failure, "
                   "modified, birth_time) "
@@ -380,6 +398,40 @@ void Db::writeCapture(const QString& filePathname, const int& percent, const QBy
     }
 }
 
+bool Db::readAudioPeaks(const QString& filePathname, std::vector<uint32_t>& peaks) const
+{
+    if (!_db.isOpen())
+        return false;
+    QSqlQuery query(_db);
+    query.prepare("SELECT version, peaks FROM audio_peaks WHERE id = :id;");
+    query.bindValue(":id", filePathname);
+    query.exec();
+    if (!query.next() || query.value(0).toInt() != AudioFingerprint::CACHE_VERSION)
+        return false;
+    const QByteArray bytes = query.value(1).toByteArray();
+    peaks.resize(static_cast<size_t>(bytes.size()) / sizeof(uint32_t));
+    if (!peaks.empty())
+        std::memcpy(peaks.data(), bytes.constData(), peaks.size() * sizeof(uint32_t));
+    return true;
+}
+
+void Db::writeAudioPeaks(const QString& filePathname, const std::vector<uint32_t>& peaks) const
+{
+    if (!_db.isOpen())
+        return;
+    QSqlQuery query(_db);
+    query.prepare("INSERT OR REPLACE INTO audio_peaks (id, version, peaks) VALUES(:id, :version, :peaks);");
+    query.bindValue(":id", filePathname);
+    query.bindValue(":version", AudioFingerprint::CACHE_VERSION);
+    // Raw native byte order: the cache is local to this machine, and every supported platform is little endian.
+    query.bindValue(":peaks", QByteArray(reinterpret_cast<const char*>(peaks.data()),
+                                         static_cast<qsizetype>(peaks.size() * sizeof(uint32_t))));
+    query.exec();
+    const QSqlError error = query.lastError();
+    if (error.isValid())
+        qDebug() << "Error with writeAudioPeaks query for video=" << filePathname << error.text();
+}
+
 bool Db::removeVideo(const QString& filePathname) const
 {
     if (!_db.isOpen()) {
@@ -408,6 +460,15 @@ bool Db::removeVideo(const QString& filePathname) const
     }
 
     query.prepare("DELETE FROM capture WHERE id = :id;");
+    query.bindValue(":id", filePathname);
+    query.exec();
+    error = query.lastError();
+    if (error.isValid()) {
+        qDebug() << "Error with removeVideo query for video=" << filePathname << " query=" << query.lastQuery();
+        qDebug() << error.text();
+    }
+
+    query.prepare("DELETE FROM audio_peaks WHERE id = :id;");
     query.bindValue(":id", filePathname);
     query.exec();
     error = query.lastError();

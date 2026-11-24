@@ -130,6 +130,16 @@
          </widget>
         </item>
         <item>
+         <widget class="QCheckBox" name="detectTrimmedCopiesCheckbox">
+          <property name="toolTip">
+           <string>Also find copies that were trimmed, cut, given another intro or remastered, by lining up their soundtracks and then checking the pictures at the matching times. The first scan reads each whole file once, which is slow for large videos; later scans use the cache. Automatic deletion skips these pairs.</string>
+          </property>
+          <property name="text">
+           <string>Detect trimmed, cut and remastered copies (by sound)</string>
+          </property>
+         </widget>
+        </item>
+        <item>
          <widget class="QCheckBox" name="verboseCheckbox">
           <property name="toolTip">
            <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;List all processed video names.  &lt;/p&gt;&lt;p&gt;Errors will be listed in any case.&lt;/p&gt;&lt;p&gt;All logs will be kept in log files.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>

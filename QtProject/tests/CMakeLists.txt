@@ -15,6 +15,8 @@ set(TEST_COMPILE_DEFINITIONS
 set(COMMON_APP_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/../app/video.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../app/visualfingerprint.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../app/audiofingerprint.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../app/trimmedcopyfinder.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../app/comparison/internal/videopairmatcher.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../app/comparison/internal/backgroundmatchdiscovery.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../app/db.cpp
@@ -179,4 +181,8 @@ set_tests_properties(test_vr_diag PROPERTIES LABELS "diagnostic")
 
 # VR library robustness: corrupt packets, unknown duration without a seek index, 8K captures
 add_qt_test(test_repo_vr_robustness SOURCES repo/vr_robustness/tst_vr_robustness.cpp)
+
+# Copies at an offset (trimmed, cut, new intro, remastered), matched by sound and confirmed by picture.
+add_qt_test(test_repo_trimmed_copies SOURCES repo/trimmed_copies/tst_trimmed_copies.cpp)
+set_tests_properties(test_repo_trimmed_copies PROPERTIES LABELS "repo-fixtures")
 set_tests_properties(test_repo_vr_robustness PROPERTIES LABELS "repo-fixtures")

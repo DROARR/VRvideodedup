@@ -85,10 +85,36 @@ VideoPairMatchConfig VideoPairMatcher::configFromPrefs(const Prefs& prefs)
 {
     return {prefs.comparisonMode(), prefs.thumbnailsMode(),      prefs._thresholdPhash,
             prefs._thresholdSSIM,   prefs._ssimBlockSize,        prefs._sameDurationModifier,
-            prefs._differentDurationModifier, prefs.detectRotatedCopies()};
+            prefs._differentDurationModifier, prefs.detectRotatedCopies(), prefs._trimmedCopyMatches};
 }
 
+namespace
+{
+VideoPairMatchResult trimmedCopyOrVisual(const Video& left, const Video& right, const VideoPairMatchConfig& config,
+                                         const VideoPairMatchResult& visual)
+{
+    if (visual.matches || config.trimmedCopies == nullptr)
+        return visual;
+    const std::optional<TrimmedCopyMatch> trimmed = config.trimmedCopies->find(left._filePathName, right._filePathName);
+    if (!trimmed)
+        return visual;
+    VideoPairMatchResult result;
+    result.matches = true;
+    result.phashSimilarity = trimmed->pictureSimilarity;
+    result.ssimSimilarity = trimmed->pictureSimilarity / 64.0;
+    result.trimmedCopy = trimmed;
+    return result;
+}
+} // namespace
+
 VideoPairMatchResult VideoPairMatcher::match(const Video& left, const Video& right, const VideoPairMatchConfig& config)
+{
+    // Picture matching first: a pair matching both ways is shown, and auto deleted, as an ordinary duplicate.
+    return trimmedCopyOrVisual(left, right, config, matchVisual(left, right, config));
+}
+
+VideoPairMatchResult VideoPairMatcher::matchVisual(const Video& left, const Video& right,
+                                                   const VideoPairMatchConfig& config)
 {
     VideoPairMatchResult bestResult;
     const int hashes = config.thumbnailsMode == cutEnds ? 2 : 1;

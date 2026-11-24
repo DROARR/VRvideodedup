@@ -16,7 +16,10 @@
 #include <functional>
 #include <memory>
 
+#include "trimmedcopyfinder.h"
 #include "visualfingerprint.h"
+
+#include <optional>
 
 #ifdef Q_OS_MACOS
 #include "obj-c.h"
@@ -59,6 +62,9 @@ class Comparison : public QDialog
     int _phashSimilarity = 0;
     double _ssimSimilarity = 0.0;
     FingerprintRotation _matchRotation = FingerprintRotation::none; // of the pair bothVideosMatch() last accepted
+    // Set for the pair last matched or shown when it only matched as a copy at an offset. Automatic deletion skips
+    // these: one copy is shorter or longer by design, so "same video, keep the better file" rules do not apply.
+    std::optional<TrimmedCopyMatch> _trimmedCopy;
 
     int _zoomLevel = 0;
     QPixmap _leftZoomed;

@@ -8,6 +8,10 @@
 
 #include "thumbnail.h"
 
+#include <memory>
+
+class TrimmedCopyMatches;
+
 class Prefs
 {
   public:
@@ -342,6 +346,26 @@ class Prefs
         QSettings(APP_NAME, APP_NAME).setValue("detect_rotated_copies", enabled);
     }
 
+    // Off by default: reading every soundtrack makes the first scan of large VR files much slower (the whole file
+    // is read once), and only then can copies of different lengths be found, which picture matching cannot.
+    bool detectTrimmedCopies() const
+    {
+        if (this->detectTrimmedCopiesStatic == nullptr)
+            this->detectTrimmedCopiesStatic =
+                std::make_unique<bool>(QSettings(APP_NAME, APP_NAME).value("detect_trimmed_copies", false).toBool());
+        return *this->detectTrimmedCopiesStatic;
+    }
+    void detectTrimmedCopies(const bool enabled)
+    {
+        if (this->detectTrimmedCopiesStatic == nullptr)
+            this->detectTrimmedCopiesStatic = std::make_unique<bool>(enabled);
+        else
+            *this->detectTrimmedCopiesStatic = enabled;
+        QSettings(APP_NAME, APP_NAME).setValue("detect_trimmed_copies", enabled);
+    }
+    // Pairs found by TrimmedCopyFinder for the videos of the last scan; null when that scan did not look for them.
+    std::shared_ptr<const TrimmedCopyMatches> _trimmedCopyMatches;
+
     SortCriterion sortCriterion() const
     {
         if (this->sortCriterionStatic == nullptr) {
@@ -371,6 +395,7 @@ class Prefs
         this->useCacheOptionStatic = nullptr;
         this->verboseStatic = nullptr;
         this->detectRotatedCopiesStatic = nullptr;
+        this->detectTrimmedCopiesStatic = nullptr;
         this->sortCriterionStatic = nullptr;
         this->customTrashFolderConfiguredStatic = nullptr;
         this->customTrashFolderStatic = nullptr;
@@ -387,6 +412,7 @@ class Prefs
     inline static std::unique_ptr<USE_CACHE_OPTION> useCacheOptionStatic = nullptr;
     inline static std::unique_ptr<bool> verboseStatic = nullptr;
     inline static std::unique_ptr<bool> detectRotatedCopiesStatic = nullptr;
+    inline static std::unique_ptr<bool> detectTrimmedCopiesStatic = nullptr;
     inline static std::unique_ptr<SortCriterion> sortCriterionStatic = nullptr;
     // To know whether the custom trash folder setting was loaded from QSettings we need an extra flag
     // because a QDir has no good state of "initialized but no value", it would just be root directory

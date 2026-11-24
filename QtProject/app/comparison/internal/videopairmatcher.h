@@ -2,8 +2,12 @@
 #define VIDEOPAIRMATCHER_H
 
 #include "prefs.h"
+#include "trimmedcopyfinder.h"
 #include "video.h"
 #include "videopairspace.h"
+
+#include <memory>
+#include <optional>
 
 // Immutable scan-time settings needed to decide whether two videos
 // intrinsically match. The complete pair space grows quadratically with the
@@ -29,6 +33,8 @@ struct VideoPairMatchConfig {
     int sameDurationModifier = 1;
     int differentDurationModifier = 4;
     bool detectRotatedCopies = false;
+    // Found once per scan by TrimmedCopyFinder; immutable, so background workers can share it.
+    std::shared_ptr<const TrimmedCopyMatches> trimmedCopies;
 };
 
 struct VideoPairMatchResult {
@@ -38,6 +44,9 @@ struct VideoPairMatchResult {
     // Rotation applied to the right video's fingerprint for this result. Auto trash needs it to compare resolutions:
     // a 90/270 copy has its width and height swapped, so the raw dimensions never agree even though it is the same video.
     FingerprintRotation rotation = FingerprintRotation::none;
+    // Set when the pair only matched as copies at an offset (by sound, confirmed by picture). Their durations, sizes
+    // and content differ by design, so automatic deletion must leave such pairs to the user.
+    std::optional<TrimmedCopyMatch> trimmedCopy;
 };
 
 // Whether two videos have the same resolution once the rotation that matched them is taken into account.
@@ -50,12 +59,14 @@ struct MatchedVideoPair {
     int64_t position = 0;
     int phashSimilarity = 0;
     double ssimSimilarity = 0.0;
+    std::optional<TrimmedCopyMatch> trimmedCopy;
 };
 
 namespace VideoPairMatcher
 {
 VideoPairMatchConfig configFromPrefs(const Prefs& prefs);
 VideoPairMatchResult match(const Video& left, const Video& right, const VideoPairMatchConfig& config);
+VideoPairMatchResult matchVisual(const Video& left, const Video& right, const VideoPairMatchConfig& config);
 } // namespace VideoPairMatcher
 
 #endif // VIDEOPAIRMATCHER_H

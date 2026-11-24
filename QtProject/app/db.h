@@ -60,6 +60,11 @@ class Db
     //save image in cache
     void writeCapture(const QString& filePathname, const int& percent, const QByteArray& image) const;
 
+    // Soundtrack fingerprint for trimmed copy matching. True when this path has peaks cached by the current
+    // fingerprint version; empty peaks then mean the video has no usable sound, which is worth remembering too.
+    bool readAudioPeaks(const QString& filePathname, std::vector<uint32_t>& peaks) const;
+    void writeAudioPeaks(const QString& filePathname, const std::vector<uint32_t>& peaks) const;
+
     //returns false was not cached or could not be removed
     bool removeVideo(const QString& filePathname) const;
 
