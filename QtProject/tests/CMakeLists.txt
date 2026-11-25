@@ -17,6 +17,8 @@ set(COMMON_APP_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/../app/visualfingerprint.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../app/audiofingerprint.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../app/trimmedcopyfinder.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../app/ffmpegfileinput.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../app/visualtimeline.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../app/comparison/internal/videopairmatcher.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../app/comparison/internal/backgroundmatchdiscovery.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../app/db.cpp
@@ -185,4 +187,8 @@ add_qt_test(test_repo_vr_robustness SOURCES repo/vr_robustness/tst_vr_robustness
 # Copies at an offset (trimmed, cut, new intro, remastered), matched by sound and confirmed by picture.
 add_qt_test(test_repo_trimmed_copies SOURCES repo/trimmed_copies/tst_trimmed_copies.cpp)
 set_tests_properties(test_repo_trimmed_copies PROPERTIES LABELS "repo-fixtures")
+
+# Clips cut from a longer video with different sound, matched by keyframe timelines and confirmed frame by frame.
+add_qt_test(test_repo_picture_cuts SOURCES repo/picture_cuts/tst_picture_cuts.cpp)
+set_tests_properties(test_repo_picture_cuts PROPERTIES LABELS "repo-fixtures")
 set_tests_properties(test_repo_vr_robustness PROPERTIES LABELS "repo-fixtures")

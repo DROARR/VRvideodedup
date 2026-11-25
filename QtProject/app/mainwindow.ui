@@ -140,6 +140,16 @@
          </widget>
         </item>
         <item>
+         <widget class="QCheckBox" name="detectCutCopiesByPictureCheckbox">
+          <property name="toolTip">
+           <string>Also find clips cut from a longer video when their sound differs (replaced music, voice-over, no sound), by lining up keyframes of the two videos and then comparing every frame around a few matching moments. Slower than the sound check: the first scan decodes a keyframe per second of every video, and each possible pair is checked frame by frame. Works best on steady footage; fast action may be missed.</string>
+          </property>
+          <property name="text">
+           <string>Detect cut copies by picture (slower, for different sound)</string>
+          </property>
+         </widget>
+        </item>
+        <item>
          <widget class="QCheckBox" name="verboseCheckbox">
           <property name="toolTip">
            <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;List all processed video names.  &lt;/p&gt;&lt;p&gt;Errors will be listed in any case.&lt;/p&gt;&lt;p&gt;All logs will be kept in log files.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>

@@ -121,6 +121,10 @@ set(PROJECT_SOURCES
     app/audiofingerprint.h
     app/trimmedcopyfinder.cpp
     app/trimmedcopyfinder.h
+    app/ffmpegfileinput.cpp
+    app/ffmpegfileinput.h
+    app/visualtimeline.cpp
+    app/visualtimeline.h
     app/visualfingerprint.cpp
     app/visualfingerprint.h
     app/comparison/comparison.cpp

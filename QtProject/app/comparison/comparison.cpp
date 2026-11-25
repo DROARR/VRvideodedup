@@ -761,14 +761,20 @@ void Comparison::updateUI()
     if (_trimmedCopy) {
         // left time = right time + offset: a positive offset means the same moments come later in the left video.
         const double offsetSeconds = _trimmedCopy->offsetMs / 1000.0;
-        ui->identicalBits->setText(QStringLiteral("Offset copy: %1 of same sound, moments %2s later in %3")
+        ui->identicalBits->setText(QStringLiteral("Offset copy: %1 of same %4, moments %2s later in %3")
                                        .arg(readableDuration(_trimmedCopy->overlapMs))
                                        .arg(QString::number(qAbs(offsetSeconds), 'f', 1))
-                                       .arg(offsetSeconds >= 0 ? QStringLiteral("left") : QStringLiteral("right")));
+                                       .arg(offsetSeconds >= 0 ? QStringLiteral("left") : QStringLiteral("right"))
+                                       .arg(_trimmedCopy->byPicture ? QStringLiteral("picture")
+                                                                    : QStringLiteral("sound")));
         ui->identicalBits->setToolTip(
-            QStringLiteral("Trimmed, cut, re-introduced or remastered copy: found by its soundtrack, then confirmed "
-                           "by comparing pictures at the matching times (%1/64 same bits at worst). Their lengths "
-                           "differ, so automatic deletion skips this pair.")
+            (_trimmedCopy->byPicture
+                 ? QStringLiteral("Cut copy: found by lining up keyframes of the two videos (their sound differs), then "
+                                  "confirmed frame by frame at the matching times (%1/64 same bits at worst). Their "
+                                  "lengths differ, so automatic deletion skips this pair.")
+                 : QStringLiteral("Trimmed, cut, re-introduced or remastered copy: found by its soundtrack, then "
+                                  "confirmed by comparing pictures at the matching times (%1/64 same bits at worst). "
+                                  "Their lengths differ, so automatic deletion skips this pair."))
                 .arg(_trimmedCopy->pictureSimilarity));
     }
     else {

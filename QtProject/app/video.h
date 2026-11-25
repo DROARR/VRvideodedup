@@ -14,6 +14,7 @@
 #include "prefs.h"
 #include "videometadata.h"
 #include "visualfingerprint.h"
+#include "visualtimeline.h"
 #include <QtCore/qmutex.h>
 
 #include <array>
@@ -85,6 +86,8 @@ class Video : public QObject
     // audioPeaksAvailable is false when the video has no sound or it could not be read: it then only matches by picture.
     std::vector<uint32_t> audioPeaks;
     bool audioPeaksAvailable = false;
+    // Keyframe fingerprints over time, filled during processing when matching cut copies by picture is enabled.
+    std::vector<VisualTimeline::Sample> visualTimeline;
 
   private:
     struct ResolvedCapture {
@@ -99,6 +102,8 @@ class Video : public QObject
     QImage captureFrame(int percent, int ofDuration, int64_t exactMs);
     // Reads (or extracts and caches) the soundtrack fingerprint. Never fails the video: sound is optional evidence.
     void processAudio(const Db* cache);
+    // Same for the picture timeline. Never fails the video either.
+    void processVisualTimeline(const Db* cache);
     QString validateInput() const;
     QString processMetadata(bool metadataCached);
     QString processFrames(const Db* cache);

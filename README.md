@@ -108,6 +108,10 @@ This setting does not apply to saved pairs declare as not duplicates.
 
 	Finds copies of different lengths that picture matching misses: trimmed at the start or end, with a scene cut out, with another intro, or remastered (regraded, upscaled, re-encoded). It lines up the two soundtracks at whatever offset they are, then compares the pictures at the matching moments, so videos that only share sound (a studio jingle, a background song, two phones filming the same moment) are not matched. Most of the shorter video's sound must be shared (at least 30 seconds, or 80% of short clips); clips under 5 seconds and videos without sound are only matched by picture. The comparison window shows these pairs as "Offset copy" with the shared duration and offset, and automatic deletion skips them, as their content differs on purpose. Off by default: the first scan reads every whole file once to get its sound, which is slow for large videos; later scans use the cache.
 
+- Detect cut copies by picture (slower, for different sound) :
+
+	Finds clips cut from a longer video when their sound differs from it (replaced music, a voice-over, sound edited separately, no sound), which the sound check above cannot. Each video's keyframes (at most one per second) are fingerprinted into a picture timeline; clips whose keyframes line up with part of a longer video at one offset are then checked frame by frame at a few of those moments, which pins the offset and rejects scenes that merely look alike, such as two scenes filmed in one room. The comparison window shows these pairs as "Offset copy ... of same picture". Slower than the sound check: the first scan decodes a keyframe per second of every video (cached for later scans), and each candidate pair decodes a few seconds of both videos. Works best on steady footage, like most VR; fast action, very short clips and pictures that were cropped or zoomed may be missed.
+
 - pHash / SSIM: 
  
 	pHash is a fast and accurate algorithm for finding duplicate videos.  

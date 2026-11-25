@@ -125,6 +125,11 @@ class MainWindow : public QMainWindow
         this->shouldScan = true; // videos must be processed again to read their sound
         this->_prefs.detectTrimmedCopies(checked);
     }
+    void on_detectCutCopiesByPictureCheckbox_toggled(bool checked)
+    {
+        this->shouldScan = true; // videos must be processed again to read their picture timelines
+        this->_prefs.detectCutCopiesByPicture(checked);
+    }
 
     void on_actionRestore_all_settings_triggered();
 

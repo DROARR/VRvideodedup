@@ -81,6 +81,7 @@ MainWindow::MainWindow() : ui(new Ui::MainWindow)
         ui->verboseCheckbox->setCheckState(Qt::Checked);
     ui->detectRotatedCopiesCheckbox->setChecked(this->_prefs.detectRotatedCopies());
     ui->detectTrimmedCopiesCheckbox->setChecked(this->_prefs.detectTrimmedCopies());
+    ui->detectCutCopiesByPictureCheckbox->setChecked(this->_prefs.detectCutCopiesByPicture());
     foreach (QString folder, this->_prefs.scanLocations()) {
         if (!folder.isEmpty())
             this->ui->directoryBox->insert(QStringLiteral("%1;").arg(QDir::toNativeSeparators(folder)));
@@ -260,11 +261,12 @@ void MainWindow::on_findDuplicates_clicked()
 
 void MainWindow::findTrimmedCopies()
 {
-    if (!_prefs.detectTrimmedCopies() || _videoList.count() < 2) {
+    if ((!_prefs.detectTrimmedCopies() && !_prefs.detectCutCopiesByPicture()) || _videoList.count() < 2) {
         _prefs._trimmedCopyMatches = nullptr;
         return;
     }
-    addStatusMessage(QStringLiteral("\n[%1] Comparing soundtracks to find trimmed, cut and remastered copies...")
+    addStatusMessage(QStringLiteral("\n[%1] Comparing soundtracks and picture timelines to find trimmed, cut and "
+                                    "remastered copies...")
                          .arg(QTime::currentTime().toString()));
     TrimmedCopyFinder::Progress progress;
     QFuture<TrimmedCopyMatches> search = QtConcurrent::run(
@@ -377,6 +379,7 @@ void MainWindow::processVideos()
         ui->selectThumbnails->setDisabled(true);
         ui->detectRotatedCopiesCheckbox->setDisabled(true);
         ui->detectTrimmedCopiesCheckbox->setDisabled(true);
+        ui->detectCutCopiesByPictureCheckbox->setDisabled(true);
         ui->processedFiles->setVisible(true);
         if (this->_prefs.useCacheOption() != Prefs::CACHE_ONLY)
             ui->processedFiles->setText(QStringLiteral("0/%1").arg(_prefs._numberOfVideos));
@@ -487,6 +490,7 @@ void MainWindow::processVideos()
     ui->selectThumbnails->setDisabled(false);
     ui->detectRotatedCopiesCheckbox->setDisabled(false);
     ui->detectTrimmedCopiesCheckbox->setDisabled(false);
+    ui->detectCutCopiesByPictureCheckbox->setDisabled(false);
     ui->processedFiles->setVisible(false);
     ui->progressBar->setVisible(false);
     ui->statusBar->setVisible(false);
@@ -616,6 +620,7 @@ void MainWindow::on_actionRestore_all_settings_triggered()
     ui->verboseCheckbox->setCheckState(Qt::Unchecked);
     ui->detectRotatedCopiesCheckbox->setChecked(false);
     ui->detectTrimmedCopiesCheckbox->setChecked(false);
+    ui->detectCutCopiesByPictureCheckbox->setChecked(false);
 
     this->ui->directoryBox->clear();
 

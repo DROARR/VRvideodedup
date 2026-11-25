@@ -14,6 +14,7 @@
 
 #include "prefs.h"
 #include "video.h"
+#include "visualtimeline.h"
 
 class Video;
 
@@ -64,6 +65,9 @@ class Db
     // fingerprint version; empty peaks then mean the video has no usable sound, which is worth remembering too.
     bool readAudioPeaks(const QString& filePathname, std::vector<uint32_t>& peaks) const;
     void writeAudioPeaks(const QString& filePathname, const std::vector<uint32_t>& peaks) const;
+    // Picture timeline for cut copy matching, versioned like sound peaks.
+    bool readVisualTimeline(const QString& filePathname, std::vector<VisualTimeline::Sample>& samples) const;
+    void writeVisualTimeline(const QString& filePathname, const std::vector<VisualTimeline::Sample>& samples) const;
 
     //returns false was not cached or could not be removed
     bool removeVideo(const QString& filePathname) const;

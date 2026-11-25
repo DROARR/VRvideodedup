@@ -67,6 +67,7 @@ bool Db::emptyAllDb(const Prefs prefs)
         query.exec(QStringLiteral("DROP TABLE IF EXISTS capture"));
         query.exec(QStringLiteral("DROP TABLE IF EXISTS ignored_pairs"));
         query.exec(QStringLiteral("DROP TABLE IF EXISTS audio_peaks"));
+        query.exec(QStringLiteral("DROP TABLE IF EXISTS visual_timeline"));
         query.exec(QStringLiteral("DROP TABLE IF EXISTS version"));
 
         query.exec(QStringLiteral("VACUUM")); // restructure sqlite file to make it smaller on disk
@@ -169,6 +170,13 @@ void Db::createTables(QSqlDatabase db, const QString appVersion)
                               "id TEXT PRIMARY KEY, "
                               "version INTEGER, "
                               "peaks BLOB"
+                              ");"));
+
+    query.exec(QStringLiteral("CREATE TABLE IF NOT EXISTS "
+                              "visual_timeline ("
+                              "id TEXT PRIMARY KEY, "
+                              "version INTEGER, "
+                              "samples BLOB"
                               ");"));
 
     // Now create a version table and entry, that could help us in the future to check if the database contains old records
@@ -331,6 +339,10 @@ void Db::writeFailure(const QString& filePathname, const QString& failure) const
     query.bindValue(":id", filePathname);
     query.exec();
 
+    query.prepare("DELETE FROM visual_timeline WHERE id = :id;");
+    query.bindValue(":id", filePathname);
+    query.exec();
+
     query.prepare("INSERT OR REPLACE INTO metadata "
                   "(id, size, duration, bitrate, framerate, codec, audio, width, height, additional_metadata, failure, "
                   "modified, birth_time) "
@@ -432,6 +444,50 @@ void Db::writeAudioPeaks(const QString& filePathname, const std::vector<uint32_t
         qDebug() << "Error with writeAudioPeaks query for video=" << filePathname << error.text();
 }
 
+// Each sample is stored as 4 bytes of time then 8 bytes of hash, in the machine's (little endian) byte order.
+constexpr int VISUAL_SAMPLE_BYTES = 12;
+
+bool Db::readVisualTimeline(const QString& filePathname, std::vector<VisualTimeline::Sample>& samples) const
+{
+    if (!_db.isOpen())
+        return false;
+    QSqlQuery query(_db);
+    query.prepare("SELECT version, samples FROM visual_timeline WHERE id = :id;");
+    query.bindValue(":id", filePathname);
+    query.exec();
+    if (!query.next() || query.value(0).toInt() != VisualTimeline::CACHE_VERSION)
+        return false;
+    const QByteArray bytes = query.value(1).toByteArray();
+    samples.resize(static_cast<size_t>(bytes.size() / VISUAL_SAMPLE_BYTES));
+    for (size_t i = 0; i < samples.size(); ++i) {
+        const char* sample = bytes.constData() + i * VISUAL_SAMPLE_BYTES;
+        std::memcpy(&samples[i].timeMs, sample, 4);
+        std::memcpy(&samples[i].phash, sample + 4, 8);
+    }
+    return true;
+}
+
+void Db::writeVisualTimeline(const QString& filePathname, const std::vector<VisualTimeline::Sample>& samples) const
+{
+    if (!_db.isOpen())
+        return;
+    QByteArray bytes(static_cast<qsizetype>(samples.size() * VISUAL_SAMPLE_BYTES), Qt::Uninitialized);
+    for (size_t i = 0; i < samples.size(); ++i) {
+        char* sample = bytes.data() + i * VISUAL_SAMPLE_BYTES;
+        std::memcpy(sample, &samples[i].timeMs, 4);
+        std::memcpy(sample + 4, &samples[i].phash, 8);
+    }
+    QSqlQuery query(_db);
+    query.prepare("INSERT OR REPLACE INTO visual_timeline (id, version, samples) VALUES(:id, :version, :samples);");
+    query.bindValue(":id", filePathname);
+    query.bindValue(":version", VisualTimeline::CACHE_VERSION);
+    query.bindValue(":samples", bytes);
+    query.exec();
+    const QSqlError error = query.lastError();
+    if (error.isValid())
+        qDebug() << "Error with writeVisualTimeline query for video=" << filePathname << error.text();
+}
+
 bool Db::removeVideo(const QString& filePathname) const
 {
     if (!_db.isOpen()) {
@@ -469,6 +525,9 @@ bool Db::removeVideo(const QString& filePathname) const
     }
 
     query.prepare("DELETE FROM audio_peaks WHERE id = :id;");
+    query.bindValue(":id", filePathname);
+    query.exec();
+    query.prepare("DELETE FROM visual_timeline WHERE id = :id;");
     query.bindValue(":id", filePathname);
     query.exec();
     error = query.lastError();

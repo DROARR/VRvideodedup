@@ -363,6 +363,23 @@ class Prefs
             *this->detectTrimmedCopiesStatic = enabled;
         QSettings(APP_NAME, APP_NAME).setValue("detect_trimmed_copies", enabled);
     }
+    // Off by default, and slower still than sound: it decodes a keyframe per second of every video, and confirming a
+    // candidate decodes every frame around a few moments. It finds cut copies whose sound differs from the original.
+    bool detectCutCopiesByPicture() const
+    {
+        if (this->detectCutCopiesByPictureStatic == nullptr)
+            this->detectCutCopiesByPictureStatic = std::make_unique<bool>(
+                QSettings(APP_NAME, APP_NAME).value("detect_cut_copies_by_picture", false).toBool());
+        return *this->detectCutCopiesByPictureStatic;
+    }
+    void detectCutCopiesByPicture(const bool enabled)
+    {
+        if (this->detectCutCopiesByPictureStatic == nullptr)
+            this->detectCutCopiesByPictureStatic = std::make_unique<bool>(enabled);
+        else
+            *this->detectCutCopiesByPictureStatic = enabled;
+        QSettings(APP_NAME, APP_NAME).setValue("detect_cut_copies_by_picture", enabled);
+    }
     // Pairs found by TrimmedCopyFinder for the videos of the last scan; null when that scan did not look for them.
     std::shared_ptr<const TrimmedCopyMatches> _trimmedCopyMatches;
 
@@ -396,6 +413,7 @@ class Prefs
         this->verboseStatic = nullptr;
         this->detectRotatedCopiesStatic = nullptr;
         this->detectTrimmedCopiesStatic = nullptr;
+        this->detectCutCopiesByPictureStatic = nullptr;
         this->sortCriterionStatic = nullptr;
         this->customTrashFolderConfiguredStatic = nullptr;
         this->customTrashFolderStatic = nullptr;
@@ -413,6 +431,7 @@ class Prefs
     inline static std::unique_ptr<bool> verboseStatic = nullptr;
     inline static std::unique_ptr<bool> detectRotatedCopiesStatic = nullptr;
     inline static std::unique_ptr<bool> detectTrimmedCopiesStatic = nullptr;
+    inline static std::unique_ptr<bool> detectCutCopiesByPictureStatic = nullptr;
     inline static std::unique_ptr<SortCriterion> sortCriterionStatic = nullptr;
     // To know whether the custom trash folder setting was loaded from QSettings we need an extra flag
     // because a QDir has no good state of "initialized but no value", it would just be root directory

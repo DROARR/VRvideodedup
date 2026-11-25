@@ -5,6 +5,7 @@
 
 #include <QtConcurrent>
 
+#include <algorithm>
 #include <bit>
 #include <memory>
 
@@ -105,6 +106,88 @@ std::optional<int> TrimmedCopyFinder::confirmPictures(const Video& first, const 
     return confirmWithCaptureCopies(*firstCapture, *secondCapture, alignment);
 }
 
+std::optional<TrimmedCopyMatch> TrimmedCopyFinder::confirmTimeline(const QString& first, const QString& second,
+                                                                   const VisualTimeline::Alignment& alignment)
+{
+    const std::vector<uint32_t>& times = alignment.matchedSampleTimesMs;
+    if (times.empty())
+        return std::nullopt;
+    // Three keyframes spread over the supporting ones; the clip's own keyframe is decoded exactly, and every frame of
+    // the longer video within the estimate's tolerance is compared with it.
+    std::vector<size_t> picks = {times.size() / 4, times.size() / 2, times.size() * 3 / 4};
+    picks.erase(std::unique(picks.begin(), picks.end()), picks.end());
+
+    // For each picked moment, how alike every nearby frame of the longer video is, by its offset from the moment.
+    struct Nearby {
+        int64_t offsetMs;
+        int similarity;
+    };
+    std::vector<std::vector<Nearby>> moments;
+    for (const size_t pick : picks) {
+        const int64_t clipMs = times[pick];
+        const std::vector<VisualTimeline::Sample> clipFrames = VisualTimeline::decodeRange(second, clipMs, clipMs);
+        if (clipFrames.empty())
+            continue;
+        const int64_t centre = clipMs + alignment.offsetMs;
+        const std::vector<VisualTimeline::Sample> frames =
+            VisualTimeline::decodeRange(first, centre - alignment.toleranceMs, centre + alignment.toleranceMs);
+        if (frames.empty())
+            continue;
+        std::vector<Nearby> nearby;
+        for (const VisualTimeline::Sample& frame : frames)
+            nearby.push_back({static_cast<int64_t>(frame.timeMs) - clipMs,
+                              64 - std::popcount(frame.phash ^ clipFrames.front().phash)});
+        moments.push_back(std::move(nearby));
+    }
+    const int compared = static_cast<int>(moments.size());
+    if (compared < 2)
+        return std::nullopt;
+
+    // One offset must explain every moment at once. Judging each moment's best frame on its own picks scattered
+    // offsets on steady footage, where many neighbouring frames are about as alike; trying every candidate offset
+    // against all moments together finds the one the clip was cut at, and pictures that merely look alike (one
+    // room, two scenes) still fail because no single offset fits them all.
+    auto similarityAt = [](const std::vector<Nearby>& nearby, int64_t offset) {
+        int best = 0;
+        for (const Nearby& frame : nearby)
+            if (qAbs(frame.offsetMs - offset) <= OFFSET_MATCH_TOLERANCE_MS)
+                best = qMax(best, frame.similarity);
+        return best;
+    };
+    int bestAgreeing = 0;
+    int bestTotal = 0;
+    int64_t bestOffset = 0;
+    int bestLowest = 0;
+    for (const std::vector<Nearby>& source : moments)
+        for (const Nearby& candidate : source) {
+            int agreeing = 0;
+            int total = 0;
+            int lowest = 64;
+            for (const std::vector<Nearby>& nearby : moments) {
+                const int similarity = similarityAt(nearby, candidate.offsetMs);
+                total += similarity;
+                if (similarity >= MIN_TIMELINE_CONFIRM_SIMILARITY) {
+                    ++agreeing;
+                    lowest = qMin(lowest, similarity);
+                }
+            }
+            if (agreeing > bestAgreeing || (agreeing == bestAgreeing && total > bestTotal)) {
+                bestAgreeing = agreeing;
+                bestTotal = total;
+                bestOffset = candidate.offsetMs;
+                bestLowest = lowest;
+            }
+        }
+    if (bestAgreeing < 2 || compared - bestAgreeing > 1)
+        return std::nullopt;
+    TrimmedCopyMatch match;
+    match.offsetMs = bestOffset;
+    match.overlapMs = alignment.overlapMs;
+    match.pictureSimilarity = bestLowest;
+    match.byPicture = true;
+    return match;
+}
+
 TrimmedCopyMatches TrimmedCopyFinder::find(const QVector<Video*>& videos, const Prefs& prefs, Progress* progress)
 {
     QVector<int> withSound;
@@ -169,5 +252,48 @@ TrimmedCopyMatches TrimmedCopyFinder::find(const QVector<Video*>& videos, const 
         if (candidate.match)
             matches.insert(videos[withSound[candidate.first]]->_filePathName,
                            videos[withSound[candidate.second]]->_filePathName, *candidate.match);
+
+    // Picture pass, for pairs sound could not match. The longer video of each pair is "first", so that alignment
+    // measures how much of the clip is found in it.
+    QVector<int> withTimeline;
+    for (int index = 0; index < videos.size(); ++index)
+        if (videos[index]->visualTimeline.size() >= 3 && videos[index]->duration >= AudioFingerprint::MIN_DURATION_MS)
+            withTimeline.append(index);
+    std::vector<const std::vector<VisualTimeline::Sample>*> timelines;
+    for (const int index : withTimeline)
+        timelines.push_back(&videos[index]->visualTimeline);
+
+    struct PictureCandidate {
+        int longer = 0; // indexes into videos
+        int shorter = 0;
+        std::optional<TrimmedCopyMatch> match;
+    };
+    std::vector<PictureCandidate> pictureCandidates;
+    for (const auto& [first, second] : VisualTimeline::candidatePairs(timelines)) {
+        int longer = withTimeline[first];
+        int shorter = withTimeline[second];
+        if (videos[longer]->duration < videos[shorter]->duration)
+            std::swap(longer, shorter);
+        if (!matches.find(videos[longer]->_filePathName, videos[shorter]->_filePathName))
+            pictureCandidates.push_back({longer, shorter, std::nullopt});
+    }
+    if (progress != nullptr)
+        progress->total += static_cast<int>(pictureCandidates.size());
+
+    // Decoding only uses each candidate's own FFmpeg contexts, so candidates are confirmed in parallel.
+    QtConcurrent::blockingMap(pictureCandidates, [&](PictureCandidate& candidate) {
+        const Video& longer = *videos[candidate.longer];
+        const Video& shorter = *videos[candidate.shorter];
+        const VisualTimeline::Alignment alignment =
+            VisualTimeline::align(longer.visualTimeline, shorter.visualTimeline, longer.duration, shorter.duration);
+        if (alignment.aligned)
+            candidate.match = confirmTimeline(longer._filePathName, shorter._filePathName, alignment);
+        if (progress != nullptr)
+            ++progress->done;
+    });
+    for (const PictureCandidate& candidate : pictureCandidates)
+        if (candidate.match)
+            matches.insert(videos[candidate.longer]->_filePathName, videos[candidate.shorter]->_filePathName,
+                           *candidate.match);
     return matches;
 }

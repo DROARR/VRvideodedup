@@ -123,6 +123,8 @@ Video::ProcessingResult Video::process()
 
     if (_prefs.detectTrimmedCopies())
         processAudio(cache.get());
+    if (_prefs.detectCutCopiesByPicture())
+        processVisualTimeline(cache.get());
 
     result.success = true;
     // Cache metadata only after a full successful run: duration may still be 0 after metadata extraction
@@ -150,6 +152,24 @@ void Video::processAudio(const Db* cache)
     // Only cache complete reads: a transient read error must not become this video's sound for later scans.
     if (extraction.error.isEmpty() && _prefs.useCacheOption() == Prefs::WITH_CACHE && cache != nullptr)
         cache->writeAudioPeaks(_filePathName, audioPeaks);
+}
+
+void Video::processVisualTimeline(const Db* cache)
+{
+    if (cache != nullptr && cache->readVisualTimeline(_filePathName, visualTimeline))
+        return;
+    if (_prefs.useCacheOption() == Prefs::CACHE_ONLY)
+        return;
+
+    VisualTimeline::ExtractionResult extraction = VisualTimeline::extract(_filePathName);
+    if (!extraction.error.isEmpty() && _prefs.isVerbose())
+        Message::Get()->add(QStringLiteral("Picture timeline of %1 could not be fully read, so it may be missed as a cut "
+                                           "copy: %2")
+                                .arg(QDir::toNativeSeparators(_filePathName), extraction.error));
+    visualTimeline = std::move(extraction.samples);
+    // Only cache complete reads, like sound.
+    if (extraction.error.isEmpty() && _prefs.useCacheOption() == Prefs::WITH_CACHE && cache != nullptr)
+        cache->writeVisualTimeline(_filePathName, visualTimeline);
 }
 
 QString Video::validateInput() const
