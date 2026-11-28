@@ -2,8 +2,6 @@
 
 namespace
 {
-constexpr int READ_BUFFER_BYTES = 4 * 1024 * 1024;
-
 int readFile(void* opaque, uint8_t* buffer, int size)
 {
     const qint64 read = static_cast<QFile*>(opaque)->read(reinterpret_cast<char*>(buffer), size);
@@ -33,16 +31,15 @@ int64_t seekFile(void* opaque, int64_t offset, int whence)
 }
 } // namespace
 
-FfmpegFileInput::FfmpegFileInput(const QString& filePathName) : _file(filePathName)
+FfmpegFileInput::FfmpegFileInput(const QString& filePathName, int bufferBytes) : _file(filePathName)
 {
     ffmpeg::av_log_set_level(AV_LOG_FATAL);
     if (!_file.open(QIODevice::ReadOnly | QIODevice::Unbuffered)) {
         _error = QStringLiteral("could not open file");
         return;
     }
-    auto* buffer = static_cast<unsigned char*>(ffmpeg::av_malloc(READ_BUFFER_BYTES));
-    _io = buffer ? ffmpeg::avio_alloc_context(buffer, READ_BUFFER_BYTES, 0, &_file, readFile, nullptr, seekFile)
-                 : nullptr;
+    auto* buffer = static_cast<unsigned char*>(ffmpeg::av_malloc(static_cast<size_t>(bufferBytes)));
+    _io = buffer ? ffmpeg::avio_alloc_context(buffer, bufferBytes, 0, &_file, readFile, nullptr, seekFile) : nullptr;
     ffmpeg::AVFormatContext* format = _io ? ffmpeg::avformat_alloc_context() : nullptr;
     if (format == nullptr) {
         if (_io == nullptr)

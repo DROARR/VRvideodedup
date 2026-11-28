@@ -13,7 +13,11 @@
 class FfmpegFileInput
 {
   public:
-    explicit FfmpegFileInput(const QString& filePathName);
+    // Large reads suit reading a whole file through. Jumping between keyframes reads one keyframe per jump, so a
+    // smaller buffer avoids reading megabytes past each one.
+    static constexpr int WHOLE_FILE_BUFFER_BYTES = 4 * 1024 * 1024;
+    static constexpr int JUMPING_BUFFER_BYTES = 512 * 1024;
+    explicit FfmpegFileInput(const QString& filePathName, int bufferBytes = WHOLE_FILE_BUFFER_BYTES);
     ~FfmpegFileInput();
     FfmpegFileInput(const FfmpegFileInput&) = delete;
     FfmpegFileInput& operator=(const FfmpegFileInput&) = delete;

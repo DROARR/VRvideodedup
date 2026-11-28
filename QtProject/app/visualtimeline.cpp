@@ -21,6 +21,9 @@ constexpr size_t MAX_SAMPLES = 4 * 3600;         // ~4 hours of one sample per s
 constexpr int SAMPLE_EDGE = 64;                  // pHash only uses a 32x32 picture
 constexpr int MAX_SKIPPED_CORRUPT_PACKETS = 500;
 constexpr int MAX_RANGE_FRAMES = 3000; // decodeRange safety net, ~100 s at 30 fps
+constexpr size_t MIN_INDEXED_KEYFRAMES = 3;
+constexpr int64_t JUMP_AIM_PAST_MS = 300;
+constexpr int MAX_PACKETS_AFTER_JUMP = 8; // a jump lands on the keyframe, possibly behind a few other packets
 
 constexpr int MIN_MATCHED_SAMPLES = 3;
 constexpr int64_t MIN_WINDOW_MS = 2000;
@@ -126,7 +129,7 @@ int64_t medianSpacingMs(const std::vector<Sample>& samples)
 ExtractionResult extract(const QString& filePathName)
 {
     ExtractionResult result;
-    FfmpegFileInput input(filePathName);
+    FfmpegFileInput input(filePathName, FfmpegFileInput::JUMPING_BUFFER_BYTES);
     if (input.context() == nullptr) {
         result.error = QStringLiteral("%1 to read its picture timeline").arg(input.error());
         return result;
@@ -155,7 +158,58 @@ ExtractionResult extract(const QString& filePathName)
         }
     };
 
-    while (result.samples.size() < MAX_SAMPLES) {
+    // Most containers index their keyframes (MP4 lists every one). Jumping straight to the wanted keyframes reads only
+    // those, a fraction of the file, where reading packets in order reads all of it: with several large VR files
+    // processed at once from one external drive, reading whole files twice (sound, then keyframes) made scans take
+    // hours while the processor waited on the drive.
+    std::vector<int64_t> wanted;
+    {
+        ffmpeg::AVStream* stream = input.context()->streams[decoder.stream];
+        int64_t lastWantedMs = INT64_MIN;
+        const int entries = ffmpeg::avformat_index_get_entries_count(stream);
+        for (int i = 0; i < entries; ++i) {
+            const ffmpeg::AVIndexEntry* entry = ffmpeg::avformat_index_get_entry(stream, i);
+            if (entry == nullptr || (entry->flags & AVINDEX_KEYFRAME) == 0)
+                continue;
+            const int64_t ms = streamMs(entry->timestamp, decoder);
+            if (lastWantedMs == INT64_MIN || ms - lastWantedMs >= MIN_SAMPLE_INTERVAL_MS) {
+                wanted.push_back(entry->timestamp);
+                lastWantedMs = ms;
+            }
+        }
+    }
+    // An index this short is not worth trusting (a few cue points, a broken index): read in order instead.
+    const bool jumpToKeyframes = wanted.size() >= MIN_INDEXED_KEYFRAMES;
+    for (size_t next = 0; jumpToKeyframes && next < wanted.size() && result.samples.size() < MAX_SAMPLES; ++next) {
+        // Index times are decoding times, which run a little ahead of presentation times when frames are reordered;
+        // seeking "at or before" exactly there can land on the previous keyframe. Aiming a bit past it, well under the
+        // one second between wanted keyframes, lands on the one wanted.
+        const int64_t aim = wanted[next] + JUMP_AIM_PAST_MS * decoder.timeBase.den / (1000LL * decoder.timeBase.num);
+        if (ffmpeg::av_seek_frame(input.context(), decoder.stream, aim, AVSEEK_FLAG_BACKWARD) < 0)
+            continue;
+        for (int attempt = 0; attempt < MAX_PACKETS_AFTER_JUMP; ++attempt) {
+            if (ffmpeg::av_read_frame(input.context(), packet) < 0)
+                break;
+            const bool keyframe = packet->stream_index == decoder.stream && (packet->flags & AV_PKT_FLAG_KEY) != 0;
+            if (keyframe && ffmpeg::avcodec_send_packet(decoder.context, packet) < 0
+                && ++skippedCorruptPackets > MAX_SKIPPED_CORRUPT_PACKETS)
+                result.error = QStringLiteral("too many corrupt picture packets");
+            ffmpeg::av_packet_unref(packet);
+            if (keyframe) {
+                // Decoders hold frames back to reorder them; after a jump that would pair a picture with another
+                // keyframe's time. Draining makes this keyframe come out now, with its own time, and flushing
+                // readies the decoder for the next jump.
+                ffmpeg::avcodec_send_packet(decoder.context, nullptr);
+                receiveFrames();
+                ffmpeg::avcodec_flush_buffers(decoder.context);
+                break;
+            }
+        }
+        if (!result.error.isEmpty())
+            break;
+    }
+
+    while (!jumpToKeyframes && result.samples.size() < MAX_SAMPLES) {
         const int read = ffmpeg::av_read_frame(input.context(), packet);
         if (read == AVERROR_EOF)
             break;
@@ -187,6 +241,10 @@ ExtractionResult extract(const QString& filePathName)
 
     std::sort(result.samples.begin(), result.samples.end(),
               [](const Sample& l, const Sample& r) { return l.timeMs < r.timeMs; });
+    // A jump can still land on a keyframe already sampled: keep each moment once.
+    result.samples.erase(std::unique(result.samples.begin(), result.samples.end(),
+                                     [](const Sample& l, const Sample& r) { return l.timeMs == r.timeMs; }),
+                         result.samples.end());
     ffmpeg::sws_freeContext(scaler);
     ffmpeg::av_frame_free(&frame);
     ffmpeg::av_packet_free(&packet);

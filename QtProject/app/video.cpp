@@ -2,6 +2,8 @@
 
 #include "audiofingerprint.h"
 
+#include <QElapsedTimer>
+
 #include <cmath>
 #include <memory>
 
@@ -143,7 +145,14 @@ void Video::processAudio(const Db* cache)
     if (_prefs.useCacheOption() == Prefs::CACHE_ONLY)
         return;
 
+    QElapsedTimer timer;
+    timer.start();
     AudioFingerprint::ExtractionResult extraction = AudioFingerprint::extractPeaks(_filePathName);
+    // Timings make slow scans diagnosable from the log: reading sound is bound by the drive, not the processor.
+    if (_prefs.isVerbose())
+        Message::Get()->add(QStringLiteral("Read sound of %1 in %2 s")
+                                .arg(QDir::toNativeSeparators(_filePathName))
+                                .arg(QString::number(timer.elapsed() / 1000.0, 'f', 1)));
     if (!extraction.error.isEmpty() && _prefs.isVerbose())
         Message::Get()->add(QStringLiteral("Sound of %1 could not be fully read, so it may be missed as a trimmed copy: %2")
                                 .arg(QDir::toNativeSeparators(_filePathName), extraction.error));
@@ -161,7 +170,14 @@ void Video::processVisualTimeline(const Db* cache)
     if (_prefs.useCacheOption() == Prefs::CACHE_ONLY)
         return;
 
+    QElapsedTimer timer;
+    timer.start();
     VisualTimeline::ExtractionResult extraction = VisualTimeline::extract(_filePathName);
+    if (_prefs.isVerbose())
+        Message::Get()->add(QStringLiteral("Read %1 keyframes of %2 in %3 s")
+                                .arg(extraction.samples.size())
+                                .arg(QDir::toNativeSeparators(_filePathName))
+                                .arg(QString::number(timer.elapsed() / 1000.0, 'f', 1)));
     if (!extraction.error.isEmpty() && _prefs.isVerbose())
         Message::Get()->add(QStringLiteral("Picture timeline of %1 could not be fully read, so it may be missed as a cut "
                                            "copy: %2")
